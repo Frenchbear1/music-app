@@ -1,4 +1,4 @@
-# Mom Music (Offline PWA)
+# Music App (Offline PWA)
 
 A clean, offline-friendly web music app you can host on Vercel (no app store).
 
@@ -66,7 +66,7 @@ Or manually add a remote and push:
 ```powershell
 git remote add origin https://github.com/<your-username>/mom-music-app.git
 git add .
-git commit -m "Initial Mom Music offline PWA"
+git commit -m "Initial Music App offline PWA"
 git push -u origin main
 ```
 

@@ -422,7 +422,7 @@ function App() {
 
       <header className="app__header">
         <div>
-          <h1 className="app__title">Mom Music</h1>
+          <h1 className="app__title">Music App</h1>
           <p className="app__subtitle">
             Import MP3 folders once, then it plays offline — even on a plane.
           </p>
@@ -615,12 +615,12 @@ function App() {
       <main className="library" aria-live="polite">
         {filteredTracks.length === 0 ? (
           <div className="empty">
-            <div className="empty__title">No tracks yet</div>
-            <div className="empty__text">
-              Import a folder or some songs to build Mom's offline library.
-            </div>
+          <div className="empty__title">No tracks yet</div>
+          <div className="empty__text">
+              Import a folder or some songs to build your offline library.
           </div>
-        ) : (
+        </div>
+      ) : (
           <ul className="track-list">
             {filteredTracks.map((track) => {
               const isActive = track.id === currentId

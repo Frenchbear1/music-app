@@ -10,9 +10,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['apple-touch-icon.svg'],
       manifest: {
-        name: 'Mom Music',
-        short_name: 'Mom Music',
-        description: 'Offline-friendly personal music library for Mom.',
+        name: 'Music App',
+        short_name: 'Music App',
+        description: 'Offline-friendly personal music library.',
         theme_color: '#0b1020',
         background_color: '#0b1020',
         display: 'standalone',

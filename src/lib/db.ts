@@ -2,7 +2,7 @@ import { openDB } from 'idb'
 import type { DBSchema, IDBPDatabase } from 'idb'
 import type { TrackRecord, TrackSummary } from '../types'
 
-interface MomMusicDB extends DBSchema {
+interface MusicAppDB extends DBSchema {
   tracks: {
     key: string
     value: TrackRecord
@@ -16,17 +16,17 @@ interface MomMusicDB extends DBSchema {
   }
 }
 
-let dbPromise: Promise<IDBPDatabase<MomMusicDB>> | null = null
+let dbPromise: Promise<IDBPDatabase<MusicAppDB>> | null = null
 
 function getDb() {
   if (!dbPromise) {
-    dbPromise = openDB<MomMusicDB>('mom-music-db', 2, {
+    dbPromise = openDB<MusicAppDB>('music-app-db', 1, {
       upgrade(db, _oldVersion, _newVersion, transaction) {
         const store = db.objectStoreNames.contains('tracks')
           ? transaction.objectStore('tracks')
           : db.createObjectStore('tracks', { keyPath: 'id' })
 
-        type TrackIndexName = keyof MomMusicDB['tracks']['indexes']
+        type TrackIndexName = keyof MusicAppDB['tracks']['indexes']
 
         const ensureIndex = (name: TrackIndexName, keyPath: string) => {
           if (!store.indexNames.contains(name)) {

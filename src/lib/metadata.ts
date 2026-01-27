@@ -39,6 +39,12 @@ function getFolderFromFile(file: File) {
   return parts.length > 0 ? parts.join('/') : 'Imported'
 }
 
+function getAlbumFromFolder(folder: string) {
+  if (!folder || folder === 'Imported') return 'Unknown Album'
+  const parts = folder.split('/').filter(Boolean)
+  return parts[parts.length - 1] ?? 'Unknown Album'
+}
+
 async function readMetadata(file: File): Promise<IAudioMetadata | null> {
   try {
     const { parseBlob } = await import('music-metadata-browser')
@@ -106,10 +112,24 @@ function pickDuration(metadata: IAudioMetadata | null) {
   return duration && Number.isFinite(duration) ? duration : 0
 }
 
-export async function buildTrackFromFile(file: File): Promise<TrackRecord> {
+export type BuildTrackOptions = {
+  id?: string
+  folder?: string
+  filename?: string
+  album?: string
+  addedAt?: number
+  favorite?: boolean
+  source?: TrackRecord['source']
+  sourceKey?: string
+}
+
+export async function buildTrackFromFile(
+  file: File,
+  options?: BuildTrackOptions,
+): Promise<TrackRecord> {
   const metadata = await readMetadata(file)
-  const folder = getFolderFromFile(file)
-  const filename = file.name
+  const folder = options?.folder ?? getFolderFromFile(file)
+  const filename = options?.filename ?? file.name
 
   const parsedDuration = pickDuration(metadata)
   const duration = parsedDuration > 0 ? parsedDuration : await getAudioDuration(file)
@@ -120,20 +140,25 @@ export async function buildTrackFromFile(file: File): Promise<TrackRecord> {
     'Unknown Title'
 
   const artist = metadata?.common.artist?.trim() || 'Unknown Artist'
-  const album = metadata?.common.album?.trim() || 'Unknown Album'
+  const album =
+    options?.album?.trim() ||
+    metadata?.common.album?.trim() ||
+    getAlbumFromFolder(folder)
   const artUrl = pictureToDataUrl(metadata)
 
   return {
-    id: makeId(),
+    id: options?.id ?? makeId(),
     title,
     artist,
     album,
     duration,
-    addedAt: Date.now(),
-    favorite: false,
+    addedAt: options?.addedAt ?? Date.now(),
+    favorite: options?.favorite ?? false,
     folder,
     filename,
     artUrl,
+    source: options?.source ?? 'imported',
+    sourceKey: options?.sourceKey,
     blob: file,
   }
 }

@@ -24,3 +24,16 @@ dist-ssr
 *.sw?
 
 .vercel
+
+# Embedded songs (large / private)
+public/songs/**/*.mp3
+public/songs/**/*.m4a
+public/songs/**/*.mp4
+public/songs/**/*.aac
+public/songs/**/*.wav
+public/songs/**/*.ogg
+public/songs/**/*.flac
+public/songs/manifest.json
+
+.vercel
+.env*.local

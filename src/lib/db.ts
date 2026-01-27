@@ -47,6 +47,7 @@ function getDb() {
 
 function toSummary(track: TrackRecord): TrackSummary {
   const { blob: _blob, ...summary } = track
+  void _blob
   return summary
 }
 
@@ -54,6 +55,12 @@ export async function getAllTrackSummaries(): Promise<TrackSummary[]> {
   const db = await getDb()
   const all = await db.getAll('tracks')
   return all.map(toSummary)
+}
+
+export async function getTrackRecord(id: string): Promise<TrackRecord | null> {
+  const db = await getDb()
+  const track = await db.get('tracks', id)
+  return track ?? null
 }
 
 export async function getTrackBlob(id: string): Promise<Blob | null> {
@@ -92,4 +99,9 @@ export async function updateTrack(
 export async function deleteAllTracks(): Promise<void> {
   const db = await getDb()
   await db.clear('tracks')
+}
+
+export async function deleteTrack(id: string): Promise<void> {
+  const db = await getDb()
+  await db.delete('tracks', id)
 }

@@ -9,7 +9,7 @@ export type SortField =
 
 export type SortDirection = 'asc' | 'desc'
 
-export type TabKey = 'library' | 'favorites'
+export type TabKey = 'library' | 'favorites' | 'albums'
 
 export interface TrackRecord {
   id: string
@@ -22,6 +22,8 @@ export interface TrackRecord {
   folder: string
   filename: string
   artUrl?: string
+  source?: 'imported' | 'embedded' | 'session'
+  sourceKey?: string
   blob: Blob
 }
 
@@ -36,5 +38,6 @@ export interface TrackSummary {
   folder: string
   filename: string
   artUrl?: string
+  source?: 'imported' | 'embedded' | 'session'
+  sourceKey?: string
 }
-

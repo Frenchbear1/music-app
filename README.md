@@ -17,7 +17,7 @@ It lets you import MP3 folders or individual songs, saves them locally in the br
 
 ## Important limitations (by design)
 
-- Browsers cannot auto-scan local folders. You must click **Import Folder** and choose the folder.
+- Browsers cannot auto-scan local folders. You must click **Import Folder** and choose the folder, or use the embedded songs folder described below.
 - Music is stored per-device/per-browser. Each device needs its own import.
 - Do **not** commit music files to GitHub; they are large and often copyrighted.
 
@@ -40,6 +40,21 @@ Then open the shown local URL.
 4. Select the `Music` folder.
 
 After import finishes, the songs will play offline.
+
+## Embedded songs folder (auto-sync)
+
+You can also drop songs directly into the app so they appear automatically.
+
+1. Put songs anywhere under `public/songs`.
+2. Run `npm run generate:songs`.
+3. Start the app with `npm run dev`.
+
+On startup, the app syncs songs from `public/songs/manifest.json` into IndexedDB.
+
+Notes:
+- If the dev server is already running, restart it after generating the manifest.
+- Browser storage quotas still apply. Thousands of songs may exceed the available space.
+- Folders under `public/songs` appear under the Albums tab. Each folder becomes an album.
 
 ## Deploy to Vercel (recommended free path)
 
@@ -76,3 +91,22 @@ git push -u origin main
 - IndexedDB via `idb`
 - Metadata parsing via `music-metadata-browser` (lazy-loaded)
 - PWA via `vite-plugin-pwa`
+
+## Icon credits
+
+```text
+Right arrow icons created by rukanicon - Flaticon
+https://www.flaticon.com/free-icons/right-arrow
+
+Rewind icons created by Freepik - Flaticon
+https://www.flaticon.com/free-icons/rewind
+
+Heart icons created by Gregor Cresnar - Flaticon
+https://www.flaticon.com/free-icons/heart
+
+Shuffle arrows icons created by Tempo_doloe - Flaticon
+https://www.flaticon.com/free-icons/shuffle-arrows
+
+Settings icons created by Pixel perfect - Flaticon
+https://www.flaticon.com/free-icons/settings
+```

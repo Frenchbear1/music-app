@@ -4,6 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "generate:songs": "node scripts/generate-song-manifest.mjs",
+    "predev": "npm run generate:songs",
+    "prebuild": "npm run generate:songs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",

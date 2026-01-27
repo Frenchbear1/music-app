@@ -3,16 +3,19 @@ import './App.css'
 import type { TabKey, TrackSummary } from './types'
 import {
   deleteAllTracks,
+  deleteTrack,
   getAllTrackSummaries,
   getTrackBlob,
   updateTrack,
   upsertTracks,
 } from './lib/db'
-import { importAudioFiles } from './lib/metadata'
+import { syncEmbeddedSongs } from './lib/embedded'
+import { buildTrackFromFile, importAudioFiles } from './lib/metadata'
 
 type ImportProgress = {
   completed: number
   total: number
+  label?: string
 }
 
 type FilterBy = 'all' | 'title' | 'artist' | 'album' | 'folder' | 'filename'
@@ -53,6 +56,7 @@ function useStorageEstimate() {
   }, [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh().catch(() => undefined)
   }, [refresh])
 
@@ -61,21 +65,29 @@ function useStorageEstimate() {
 
 function App() {
   const [tracks, setTracks] = useState<TrackSummary[]>([])
+  const [libraryMode, setLibraryMode] = useState<'offline' | 'session'>('offline')
   const [tab, setTab] = useState<TabKey>('library')
+  const [selectedAlbumFolder, setSelectedAlbumFolder] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [filterBy, setFilterBy] = useState<FilterBy>('all')
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
 
   const [queueIds, setQueueIds] = useState<string[]>([])
   const [currentId, setCurrentId] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [currentDuration, setCurrentDuration] = useState(0)
+  const [shuffleOn, setShuffleOn] = useState(false)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const currentObjectUrlRef = useRef<string | null>(null)
   const pendingPlayRef = useRef(false)
+  const longPressTimerRef = useRef<number | null>(null)
+  const longPressTriggeredRef = useRef(false)
+  const sessionBlobsRef = useRef<Map<string, Blob>>(new Map())
 
   const folderInputRef = useRef<HTMLInputElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -86,16 +98,113 @@ function App() {
   const loadTracks = useCallback(async () => {
     const all = await getAllTrackSummaries()
     setTracks(all)
+    setLibraryMode('offline')
   }, [])
 
   useEffect(() => {
     loadTracks().catch(() => undefined)
   }, [loadTracks])
 
+  useEffect(() => {
+    let cancelled = false
+    let started = false
+    const label = 'Syncing embedded songs'
+
+    const run = async () => {
+      const result = await syncEmbeddedSongs(({ completed, total }) => {
+        if (cancelled || total === 0) return
+        started = true
+        setStatusMessage('')
+        setImportProgress({ completed, total, label })
+      })
+
+      if (cancelled || result.total === 0) return
+
+      if (started) {
+        setImportProgress(null)
+      }
+
+      if (result.imported > 0) {
+        await loadTracks()
+        setStatusMessage(
+          `Synced ${result.imported} embedded track${result.imported === 1 ? '' : 's'}.`,
+        )
+        refreshStorageEstimate().catch(() => undefined)
+        return
+      }
+
+      setStatusMessage('Embedded songs are up to date.')
+    }
+
+    run().catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [loadTracks, refreshStorageEstimate])
+
+  useEffect(() => {
+    if (!statusMessage) return
+    const timeoutId = window.setTimeout(() => {
+      setStatusMessage('')
+    }, 5000)
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [statusMessage])
+
+  const embeddedAlbums = useMemo(() => {
+    const embeddedTracks = tracks.filter(
+      (track) => track.source === 'embedded' || track.source === 'imported',
+    )
+    const albumsByFolder = new Map<
+      string,
+      { folder: string; name: string; count: number; tracks: TrackSummary[] }
+    >()
+
+    for (const track of embeddedTracks) {
+      const folder = track.folder || 'Embedded'
+      const existing = albumsByFolder.get(folder)
+
+      if (existing) {
+        existing.count += 1
+        existing.tracks.push(track)
+        continue
+      }
+
+      const fallbackName = folder.split('/').filter(Boolean).pop() ?? 'Embedded'
+      albumsByFolder.set(folder, {
+        folder,
+        name: track.album || fallbackName,
+        count: 1,
+        tracks: [track],
+      })
+    }
+
+    return Array.from(albumsByFolder.values()).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )
+  }, [tracks])
+
+  const selectedAlbum = useMemo(() => {
+    if (!selectedAlbumFolder) return null
+    return embeddedAlbums.find((album) => album.folder === selectedAlbumFolder) ?? null
+  }, [embeddedAlbums, selectedAlbumFolder])
+
   const filteredTracks = useMemo(() => {
     const loweredSearch = search.trim().toLowerCase()
 
-    const base = tracks.filter((track) => !(tab === 'favorites' && !track.favorite))
+    if (tab === 'albums' && !selectedAlbum) {
+      return []
+    }
+
+    const base =
+      tab === 'favorites'
+        ? tracks.filter((track) => track.favorite)
+        : tab === 'albums' && selectedAlbum
+          ? selectedAlbum.tracks
+          : tracks
+
     if (!loweredSearch) return defaultSort(base)
 
     const matches = (track: TrackSummary) => {
@@ -108,7 +217,19 @@ function App() {
     }
 
     return defaultSort(base.filter(matches))
-  }, [tracks, tab, search, filterBy])
+  }, [tracks, tab, selectedAlbum, search, filterBy])
+
+  useEffect(() => {
+    if (tab !== 'albums' && selectedAlbumFolder) {
+      setSelectedAlbumFolder(null)
+    }
+  }, [tab, selectedAlbumFolder])
+
+  useEffect(() => {
+    if (tab === 'albums' && selectedAlbumFolder && !selectedAlbum) {
+      setSelectedAlbumFolder(null)
+    }
+  }, [tab, selectedAlbumFolder, selectedAlbum])
 
   const currentTrack = useMemo(() => {
     return currentId ? tracks.find((t) => t.id === currentId) ?? null : null
@@ -121,18 +242,63 @@ function App() {
 
   const canGoPrev = currentIndex > 0
   const canGoNext = currentIndex >= 0 && currentIndex < queueIds.length - 1
+  const canShuffleStep = queueIds.length > 1
+  const prevDisabled = shuffleOn ? !canShuffleStep : !canGoPrev
+  const nextDisabled = shuffleOn ? !canShuffleStep : !canGoNext
+
+  const pickRandomNextId = useCallback(() => {
+    if (queueIds.length === 0) return null
+    const candidates = queueIds.filter((id) => id !== currentId)
+    const pool = candidates.length > 0 ? candidates : queueIds
+    const index = Math.floor(Math.random() * pool.length)
+    return pool[index] ?? null
+  }, [queueIds, currentId])
 
   const handleImport = useCallback(
-    async (fileList: FileList | null) => {
+    async (fileList: FileList | null, mode: 'offline' | 'session') => {
       if (!fileList || fileList.length === 0) return
 
+      setSettingsOpen(false)
       setStatusMessage('')
 
       const files = Array.from(fileList)
-      setImportProgress({ completed: 0, total: files.length })
+      setImportProgress({
+        completed: 0,
+        total: files.length,
+        label: mode === 'session' ? 'Loading for this session' : 'Importing',
+      })
+
+      if (mode === 'session') {
+        const sessionTracks: TrackSummary[] = []
+        const sessionBlobs = new Map<string, Blob>()
+
+        let completed = 0
+        const total = files.length
+
+        for (const file of files) {
+          const track = await buildTrackFromFile(file, {
+            source: 'session',
+          })
+          sessionTracks.push(track)
+          sessionBlobs.set(track.id, track.blob)
+          completed += 1
+          setImportProgress({ completed, total, label: 'Loading for this session' })
+        }
+
+        sessionBlobsRef.current = sessionBlobs
+        setTracks(sessionTracks)
+        setLibraryMode('session')
+        setImportProgress(null)
+        setStatusMessage(
+          sessionTracks.length === 0
+            ? 'No audio files found in that selection.'
+            : `Loaded ${sessionTracks.length} track${sessionTracks.length === 1 ? '' : 's'} for this session.`,
+        )
+        return
+      }
 
       const newTracks = await importAudioFiles(files, (completed, total) => {
-        setImportProgress({ completed, total })
+        setImportProgress({ completed, total, label: 'Importing' })
       })
 
       await upsertTracks(newTracks)
@@ -159,8 +325,11 @@ function App() {
   }, [])
 
   const clearLibrary = useCallback(async () => {
+    setSettingsOpen(false)
     await deleteAllTracks()
+    sessionBlobsRef.current = new Map()
     setTracks([])
+    setLibraryMode('offline')
     setQueueIds([])
     setCurrentId(null)
     setIsPlaying(false)
@@ -183,12 +352,22 @@ function App() {
     refreshStorageEstimate().catch(() => undefined)
   }, [refreshStorageEstimate])
 
-  const setFavorite = useCallback(async (id: string, favorite: boolean) => {
-    const updated = await updateTrack(id, (track) => ({ ...track, favorite }))
-    if (!updated) return
+  const setFavorite = useCallback(
+    async (id: string, favorite: boolean) => {
+      if (libraryMode === 'session') {
+        setTracks((prev) =>
+          prev.map((t) => (t.id === id ? { ...t, favorite } : t)),
+        )
+        return
+      }
 
-    setTracks((prev) => prev.map((t) => (t.id === id ? updated : t)))
-  }, [])
+      const updated = await updateTrack(id, (track) => ({ ...track, favorite }))
+      if (!updated) return
+
+      setTracks((prev) => prev.map((t) => (t.id === id ? updated : t)))
+    },
+    [libraryMode],
+  )
 
   const toggleFavorite = useCallback(
     (track: TrackSummary) => {
@@ -197,9 +376,48 @@ function App() {
     [setFavorite],
   )
 
+  const handleDeleteTrack = useCallback(
+    async (track: TrackSummary) => {
+      const confirmed = window.confirm(`Delete "${track.title}"?`)
+      if (!confirmed) return
+
+      if (libraryMode === 'session') {
+        sessionBlobsRef.current.delete(track.id)
+      } else {
+        await deleteTrack(track.id)
+      }
+
+      setTracks((prev) => prev.filter((t) => t.id !== track.id))
+      setQueueIds((prev) => prev.filter((id) => id !== track.id))
+
+      if (currentId === track.id) {
+        setCurrentId(null)
+        setIsPlaying(false)
+        setCurrentTime(0)
+        setCurrentDuration(0)
+
+        const audio = audioRef.current
+        if (audio) {
+          audio.pause()
+          audio.removeAttribute('src')
+          audio.load()
+        }
+
+        if (currentObjectUrlRef.current) {
+          URL.revokeObjectURL(currentObjectUrlRef.current)
+          currentObjectUrlRef.current = null
+        }
+      }
+
+      refreshStorageEstimate().catch(() => undefined)
+    },
+    [currentId, libraryMode, refreshStorageEstimate],
+  )
+
   const loadTrackIntoAudio = useCallback(
     async (id: string) => {
-      const blob = await getTrackBlob(id)
+      const sessionBlob = sessionBlobsRef.current.get(id)
+      const blob = sessionBlob ?? (await getTrackBlob(id))
       if (!blob) return
 
       const audio = audioRef.current
@@ -218,7 +436,7 @@ function App() {
       setCurrentTime(0)
       setCurrentDuration(0)
 
-      if (pendingPlayRef.current || isPlaying) {
+      if (pendingPlayRef.current) {
         try {
           await audio.play()
           setIsPlaying(true)
@@ -229,7 +447,7 @@ function App() {
         }
       }
     },
-    [isPlaying],
+    [],
   )
 
   useEffect(() => {
@@ -250,7 +468,14 @@ function App() {
     }
 
     const onEnded = () => {
-      if (canGoNext) {
+      if (shuffleOn) {
+        const nextId = pickRandomNextId()
+        if (nextId) {
+          pendingPlayRef.current = true
+          setCurrentId(nextId)
+          return
+        }
+      } else if (canGoNext) {
         const nextId = queueIds[currentIndex + 1]
         if (nextId) {
           pendingPlayRef.current = true
@@ -270,7 +495,7 @@ function App() {
       audio.removeEventListener('loadedmetadata', onLoadedMetadata)
       audio.removeEventListener('ended', onEnded)
     }
-  }, [canGoNext, currentIndex, queueIds])
+  }, [canGoNext, currentIndex, pickRandomNextId, queueIds, shuffleOn])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -304,20 +529,18 @@ function App() {
   )
 
   const goNext = useCallback(() => {
-    if (!canGoNext) return
-    const nextId = queueIds[currentIndex + 1]
+    const nextId = shuffleOn ? pickRandomNextId() : queueIds[currentIndex + 1]
     if (!nextId) return
     pendingPlayRef.current = isPlaying
     setCurrentId(nextId)
-  }, [canGoNext, currentIndex, isPlaying, queueIds])
+  }, [currentIndex, isPlaying, pickRandomNextId, queueIds, shuffleOn])
 
   const goPrev = useCallback(() => {
-    if (!canGoPrev) return
-    const prevId = queueIds[currentIndex - 1]
+    const prevId = shuffleOn ? pickRandomNextId() : queueIds[currentIndex - 1]
     if (!prevId) return
     pendingPlayRef.current = isPlaying
     setCurrentId(prevId)
-  }, [canGoPrev, currentIndex, isPlaying, queueIds])
+  }, [currentIndex, isPlaying, pickRandomNextId, queueIds, shuffleOn])
 
   const togglePlayPause = useCallback(() => {
     const audio = audioRef.current
@@ -344,7 +567,32 @@ function App() {
     setCurrentTime(value)
   }, [])
 
-  const activeCount = filteredTracks.length
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }, [])
+
+  const startLongPress = useCallback(
+    (track: TrackSummary) => {
+      longPressTriggeredRef.current = false
+      clearLongPressTimer()
+
+      longPressTimerRef.current = window.setTimeout(() => {
+        longPressTriggeredRef.current = true
+        handleDeleteTrack(track).catch(() => undefined)
+      }, 650)
+    },
+    [clearLongPressTimer, handleDeleteTrack],
+  )
+
+  const endLongPress = useCallback(() => {
+    clearLongPressTimer()
+  }, [clearLongPressTimer])
+
+  const activeCount =
+    tab === 'albums' && !selectedAlbumFolder ? embeddedAlbums.length : filteredTracks.length
   const totalCount = tracks.length
 
   return (
@@ -352,203 +600,389 @@ function App() {
       <audio ref={audioRef} />
 
       <header className="app__header">
-        <div>
-          <h1 className="app__title">Music App</h1>
-          <p className="app__subtitle">
-            Import MP3 folders once, then it plays offline — even on a plane.
-          </p>
-        </div>
-
-        <div className="app__tabs" role="tablist" aria-label="Library Tabs">
-          <button
-            className={`tab ${tab === 'library' ? 'tab--active' : ''}`}
-            onClick={() => setTab('library')}
-            role="tab"
-            aria-selected={tab === 'library'}
-          >
-            Library
-          </button>
-          <button
-            className={`tab ${tab === 'favorites' ? 'tab--active' : ''}`}
-            onClick={() => setTab('favorites')}
-            role="tab"
-            aria-selected={tab === 'favorites'}
-          >
-            Favorites
-          </button>
-        </div>
-      </header>
-
-      <section className="panel panel--import">
-        <div className="panel__row">
-          <div className="panel__actions">
-            <button className="btn btn--primary" onClick={openFolderPicker}>
-              Import Folder
-            </button>
-            <button className="btn" onClick={openFilePicker}>
-              Import Songs
-            </button>
-            <button className="btn btn--ghost" onClick={clearLibrary}>
-              Clear Library
-            </button>
-
-            <input
-              ref={folderInputRef}
-              className="sr-only"
-              type="file"
-              accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"
-              multiple
-              onChange={(e) => handleImport(e.target.files).catch(() => undefined)}
-              // These attributes enable folder picking in Chromium-based browsers.
-              {...({ webkitdirectory: '' } as Record<string, string>)}
-              {...({ directory: '' } as Record<string, string>)}
-            />
-
-            <input
-              ref={fileInputRef}
-              className="sr-only"
-              type="file"
-              accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"
-              multiple
-              onChange={(e) => handleImport(e.target.files).catch(() => undefined)}
-            />
+        <div className="app__top">
+          <div className="app__brand">
+            <h1 className="app__title">Music App</h1>
           </div>
+          <div className="settings">
+            <button
+              className={`icon-btn settings__btn ${settingsOpen ? 'settings__btn--active' : ''}`}
+              type="button"
+              onClick={() => setSettingsOpen((prev) => !prev)}
+              aria-expanded={settingsOpen}
+              aria-controls="settings-menu"
+              aria-label="Settings"
+              title="Settings"
+            >
+              <img src="/public/icons/settings.png" alt="" className="icon-img" aria-hidden="true" />
+            </button>
 
-          <div className="panel__meta">
-            <span className="pill">
-              Showing {activeCount} / {totalCount}
-            </span>
-            {storageEstimate && (
-              <span className="pill">
-                Storage {storageEstimate.usedMB.toFixed(0)} / {storageEstimate.quotaMB.toFixed(0)} MB
-              </span>
+            {settingsOpen && (
+              <div id="settings-menu" className="settings__menu" role="menu">
+                <div className="settings__meta">
+                  <span className="pill">
+                    Showing {activeCount} / {totalCount}
+                  </span>
+                  {storageEstimate && (
+                    <span className="pill">
+                      Storage {storageEstimate.usedMB.toFixed(0)} / {storageEstimate.quotaMB.toFixed(0)} MB
+                    </span>
+                  )}
+                </div>
+
+                <div className="settings__actions">
+                  <button className="btn btn--primary" onClick={openFolderPicker} role="menuitem">
+                    Import Folder
+                  </button>
+                  <button className="btn" onClick={openFilePicker} role="menuitem">
+                    Import Songs
+                  </button>
+                  <button className="btn btn--ghost" onClick={clearLibrary} role="menuitem">
+                    Clear Library
+                  </button>
+                </div>
+
+                <input
+                  ref={folderInputRef}
+                  className="sr-only"
+                  type="file"
+                  accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"
+                  multiple
+                  onChange={(e) => handleImport(e.target.files, 'offline').catch(() => undefined)}
+                  {...({ webkitdirectory: '' } as Record<string, string>)}
+                  {...({ directory: '' } as Record<string, string>)}
+                />
+
+                <input
+                  ref={fileInputRef}
+                  className="sr-only"
+                  type="file"
+                  accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"
+                  multiple
+                  onChange={(e) => handleImport(e.target.files, 'offline').catch(() => undefined)}
+                />
+
+              </div>
             )}
           </div>
         </div>
 
-        <div className="panel__hint">
-          Tip: click <strong>Import Folder</strong> and pick{' '}
-          <code>Downloads\Music</code> (or any folder). Browsers block auto-scanning
-          local files, but once you import, everything is saved for offline playback.
-        </div>
+        
 
-        {importProgress && (
-          <div className="progress">
-            <div
-              className="progress__bar"
-              style={{
-                width:
-                  importProgress.total === 0
-                    ? '0%'
-                    : `${Math.min(
-                        100,
-                        Math.round((importProgress.completed / importProgress.total) * 100),
-                      )}%`,
-              }}
-            />
-            <div className="progress__label">
-              Importing {importProgress.completed} / {importProgress.total}
-            </div>
-          </div>
-        )}
-
-        {statusMessage && <div className="status">{statusMessage}</div>}
-      </section>
-
-      <section className="panel panel--controls">
-        <div className="controls">
-          <label className="field">
-            <span className="field__label">Filter By</span>
-            <select
-              className="field__select"
-              value={filterBy}
-              onChange={(e) => setFilterBy(e.target.value as FilterBy)}
-            >
-              {(Object.keys(FILTER_LABELS) as FilterBy[]).map((key) => (
-                <option key={key} value={key}>
-                  {FILTER_LABELS[key]}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="field field--search">
-            <span className="field__label">Search</span>
-            <div className="search">
-              <input
-                className="field__input search__input"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Type to search..."
-              />
+        <div className="app__center">
+          <div className="tabs-group">
+            <div className="app__tabs" role="tablist" aria-label="Library Tabs">
               <button
-                className="btn btn--primary search__btn"
-                type="button"
-                onClick={() => setSearch((prev) => prev.trim())}
-                aria-label="Search"
-                title="Search"
+                className={`tab ${tab === 'library' ? 'tab--active' : ''}`}
+                onClick={() => {
+                  setTab('library')
+                  setSelectedAlbumFolder(null)
+                }}
+                role="tab"
+                aria-selected={tab === 'library'}
               >
-                Search
+                Library
+              </button>
+              <button
+                className={`tab ${tab === 'favorites' ? 'tab--active' : ''}`}
+                onClick={() => {
+                  setTab('favorites')
+                  setSelectedAlbumFolder(null)
+                }}
+                role="tab"
+                aria-selected={tab === 'favorites'}
+              >
+                Favorites
+              </button>
+              <button
+                className={`tab ${tab === 'albums' ? 'tab--active' : ''}`}
+                onClick={() => {
+                  setTab('albums')
+                  setSelectedAlbumFolder(null)
+                }}
+                role="tab"
+                aria-selected={tab === 'albums'}
+              >
+                Albums
               </button>
             </div>
-          </label>
-        </div>
-      </section>
 
-      <main className="library" aria-live="polite">
-        {filteredTracks.length === 0 ? (
-          <div className="empty">
-          <div className="empty__title">No tracks yet</div>
-          <div className="empty__text">
-              Import a folder or some songs to build your offline library.
+            <button
+              className={`icon-btn toggle-btn ${searchOpen ? 'toggle-btn--active' : ''}`}
+              type="button"
+              onClick={() => setSearchOpen((prev) => !prev)}
+              aria-expanded={searchOpen}
+              aria-controls="search-panel"
+              aria-label="Toggle search and filter"
+              title="Search and Filter"
+            >
+              <svg
+                className="toggle-btn__icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  d="M4 6h16l-6.8 7.4v4.8l-2.4-1.4v-3.4L4 6z"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
           </div>
         </div>
-      ) : (
+      </header>
+
+      <section className="player player--top">
+          <div className="player__now">
+            <div className="player__meta">
+              <div className="player__title">{currentTrack?.title ?? 'Nothing playing'}</div>
+            </div>
+          </div>
+
+          <div className="player__controls">
+            <div className="player__buttons">
+              <button
+                className={`icon-btn shuffle-btn ${shuffleOn ? 'shuffle-btn--active' : ''}`}
+                onClick={() => setShuffleOn((prev) => !prev)}
+                aria-pressed={shuffleOn}
+                aria-label={shuffleOn ? 'Shuffle on' : 'Shuffle off'}
+                title={shuffleOn ? 'Shuffle on' : 'Shuffle off'}
+              >
+                <img src="/public/icons/shuffle.png" alt="" className="icon-img" aria-hidden="true" />
+              </button>
+              <div className="player__main-controls">
+                <button className="icon-btn" onClick={goPrev} disabled={prevDisabled} aria-label="Previous">
+                  <img src="/public/icons/backward-arrow.png" alt="" className="icon-img" aria-hidden="true" />
+                </button>
+                <button className="icon-btn icon-btn--play" onClick={togglePlayPause} aria-label={isPlaying ? 'Pause' : 'Play'}>
+                  {isPlaying ? 'Pause' : 'Play'}
+                </button>
+                <button className="icon-btn" onClick={goNext} disabled={nextDisabled} aria-label="Next">
+                  <img src="/public/icons/next.png" alt="" className="icon-img" aria-hidden="true" />
+                </button>
+              </div>
+              <button
+                className={`icon-btn favorite-btn ${currentTrack?.favorite ? 'favorite-btn--active' : ''}`}
+                onClick={() => currentTrack && toggleFavorite(currentTrack)}
+                disabled={!currentTrack}
+                aria-label={currentTrack?.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                title={currentTrack?.favorite ? 'Remove from favorites' : 'Add to favorites'}
+              >
+                <img
+                  src={currentTrack?.favorite ? '/public/icons/filled-heart.png' : '/public/icons/heart.png'}
+                  alt=""
+                  className="icon-img icon-img--large"
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
+
+            <div className="player__timeline">
+              <span className="time">{formatTime(currentTime)}</span>
+              <input
+                className="timeline"
+                type="range"
+                min={0}
+                max={Math.max(currentDuration, 0)}
+                step={0.1}
+                value={Math.min(currentTime, currentDuration || currentTime)}
+                onChange={(e) => seekTo(Number(e.target.value))}
+                disabled={!currentTrack}
+                aria-label="Seek"
+              />
+              <span className="time">{formatTime(currentDuration)}</span>
+            </div>
+          </div>
+        </section>
+
+      {(importProgress || statusMessage) && (
+        <section className="panel panel--status">
+          {importProgress && (
+            <div className="progress">
+              <div className="progress__meta">
+                <span className="pill">
+                  {(importProgress.label ?? 'Importing')} {importProgress.completed} /{' '}
+                  {importProgress.total}
+                </span>
+              </div>
+              <div className="progress__track">
+                <div
+                  className="progress__bar"
+                  style={{
+                    width:
+                      importProgress.total === 0
+                        ? '0%'
+                        : `${Math.min(
+                            100,
+                            Math.round((importProgress.completed / importProgress.total) * 100),
+                          )}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+          {statusMessage && <div className="status">{statusMessage}</div>}
+        </section>
+      )}
+
+      {searchOpen && (
+        <section id="search-panel" className="panel panel--controls">
+          <div className="controls">
+            <label className="field">
+              <span className="field__label">Filter By</span>
+              <select
+                className="field__select"
+                value={filterBy}
+                onChange={(e) => setFilterBy(e.target.value as FilterBy)}
+              >
+                {(Object.keys(FILTER_LABELS) as FilterBy[]).map((key) => (
+                  <option key={key} value={key}>
+                    {FILTER_LABELS[key]}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="field field--search">
+              <span className="field__label">Search</span>
+              <div className="search">
+                <input
+                  className="field__input search__input"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Type to search..."
+                />
+                <button
+                  className="btn btn--primary search__btn"
+                  type="button"
+                  onClick={() => setSearch((prev) => prev.trim())}
+                  aria-label="Search"
+                  title="Search"
+                >
+                  Search
+                </button>
+              </div>
+            </label>
+          </div>
+        </section>
+      )}
+
+      {tab === 'albums' && selectedAlbum && (
+        <section className="panel panel--albums">
+          <button
+            className="btn btn--ghost"
+            type="button"
+            onClick={() => setSelectedAlbumFolder(null)}
+          >
+            ← All Albums
+          </button>
+          <span className="pill">
+            {selectedAlbum.name} · {selectedAlbum.count} song
+            {selectedAlbum.count === 1 ? '' : 's'}
+          </span>
+        </section>
+      )}
+
+      <main className="library" aria-live="polite">
+        {tab === 'albums' && !selectedAlbum ? (
+          <div className="albums">
+            {embeddedAlbums.length === 0 ? (
+              <div className="empty">
+                <div className="empty__title">No albums yet</div>
+                <div className="empty__text">
+                  Add folders inside public/songs and run generate:songs.
+                </div>
+              </div>
+            ) : (
+              <ul className="album-list">
+                {embeddedAlbums.map((album) => (
+                  <li key={album.folder} className="album">
+                    <button
+                      className="album__btn"
+                      type="button"
+                      onClick={() => {
+                        setTab('albums')
+                        setSelectedAlbumFolder(album.folder)
+                      }}
+                    >
+                      <div className="album__name" title={album.name}>
+                        {album.name}
+                      </div>
+                      <div className="album__meta">
+                        <span>{album.count} song{album.count === 1 ? '' : 's'}</span>
+                        <span className="album__folder">{album.folder}</span>
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : filteredTracks.length === 0 ? (
+          <div className="empty">
+            <div className="empty__title">No tracks yet</div>
+            <div className="empty__text">
+              Import a folder or some songs to build your offline library.
+            </div>
+          </div>
+        ) : (
           <ul className="track-list">
             {filteredTracks.map((track) => {
               const isActive = track.id === currentId
               return (
                 <li key={track.id} className={`track ${isActive ? 'track--active' : ''}`}>
-                  <button className="track__main" onClick={() => playFromVisible(track)}>
-                    <div className="art" aria-hidden="true">
-                      {track.artUrl ? (
-                        <img src={track.artUrl} alt="" loading="lazy" />
-                      ) : (
-                        <div className="art__fallback">♪</div>
-                      )}
-                    </div>
-
+                  <button
+                    className="track__main"
+                    onPointerDown={() => startLongPress(track)}
+                    onPointerUp={endLongPress}
+                    onPointerLeave={endLongPress}
+                    onPointerCancel={endLongPress}
+                    onClick={() => {
+                      if (longPressTriggeredRef.current) {
+                        longPressTriggeredRef.current = false
+                        return
+                      }
+                      playFromVisible(track)
+                    }}
+                    title="Tap to play. Press and hold to delete."
+                  >
                     <div className="track__meta">
                       <div className="track__title" title={track.title}>
                         {track.title}
                       </div>
-                      <div className="track__sub">
-                        <span title={track.artist}>{track.artist}</span>
-                        <span className="dot">•</span>
-                        <span title={track.album}>{track.album}</span>
-                        <span className="dot">•</span>
-                        <span title={track.folder}>{track.folder}</span>
-                      </div>
                     </div>
 
                     <div className="track__right">
-                      <span className="track__duration">{formatTime(track.duration)}</span>
-                      <span className="track__added">
-                        {new Date(track.addedAt).toLocaleDateString()}
-                      </span>
+                      <div className="track__stats">
+                        <span className="track__duration">{formatTime(track.duration)}</span>
+                        <span className="track__added">
+                          {new Date(track.addedAt).toLocaleDateString()}
+                        </span>
+                      </div>
+
+                      <button
+                        className={`icon-btn track__favorite ${track.favorite ? 'icon-btn--favorite' : ''}`}
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          toggleFavorite(track)
+                        }}
+                        aria-label={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                        title={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                      >
+                        <img
+                          src={track.favorite ? '/public/icons/filled-heart.png' : '/public/icons/heart.png'}
+                          alt=""
+                          className="icon-img icon-img--small"
+                          aria-hidden="true"
+                        />
+                      </button>
                     </div>
                   </button>
-
-                  <div className="track__actions">
-                    <button
-                      className={`icon-btn ${track.favorite ? 'icon-btn--favorite' : ''}`}
-                      onClick={() => toggleFavorite(track)}
-                      aria-label={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
-                      title={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
-                    >
-                      {track.favorite ? '♥' : '♡'}
-                    </button>
-                  </div>
                 </li>
               )
             })}
@@ -556,57 +990,9 @@ function App() {
         )}
       </main>
 
-      <footer className="player">
-        <div className="player__now">
-          <div className="art art--small" aria-hidden="true">
-            {currentTrack?.artUrl ? (
-              <img src={currentTrack.artUrl} alt="" />
-            ) : (
-              <div className="art__fallback">♪</div>
-            )}
-          </div>
-          <div className="player__meta">
-            <div className="player__title">{currentTrack?.title ?? 'Nothing playing'}</div>
-            <div className="player__sub">
-              {currentTrack
-                ? `${currentTrack.artist} • ${currentTrack.album} • ${currentTrack.folder}`
-                : 'Import music to start playing offline.'}
-            </div>
-          </div>
-        </div>
-
-        <div className="player__controls">
-          <div className="player__buttons">
-            <button className="icon-btn" onClick={goPrev} disabled={!canGoPrev} aria-label="Previous">
-              ‹‹
-            </button>
-            <button className="icon-btn icon-btn--play" onClick={togglePlayPause} aria-label={isPlaying ? 'Pause' : 'Play'}>
-              {isPlaying ? 'Pause' : 'Play'}
-            </button>
-            <button className="icon-btn" onClick={goNext} disabled={!canGoNext} aria-label="Next">
-              ››
-            </button>
-          </div>
-
-          <div className="player__timeline">
-            <span className="time">{formatTime(currentTime)}</span>
-            <input
-              className="timeline"
-              type="range"
-              min={0}
-              max={Math.max(currentDuration, 0)}
-              step={0.1}
-              value={Math.min(currentTime, currentDuration || currentTime)}
-              onChange={(e) => seekTo(Number(e.target.value))}
-              disabled={!currentTrack}
-              aria-label="Seek"
-            />
-            <span className="time">{formatTime(currentDuration)}</span>
-          </div>
-        </div>
-      </footer>
     </div>
   )
 }
 
 export default App
+

@@ -25,10 +25,10 @@ It lets you import MP3 folders or individual songs, saves them locally in the br
 
 From this folder (`C:\Users\labar\Downloads\mom-music-app`):
 
-```powershell
+\`\`\`powershell
 npm install
 npm run dev
-```
+\`\`\`
 
 Then open the shown local URL.
 
@@ -57,18 +57,18 @@ High-level steps:
 
 If a remote is not set yet, you can use GitHub CLI:
 
-```powershell
+\`\`\`powershell
 gh repo create mom-music-app --public --source . --remote origin --push
-```
+\`\`\`
 
 Or manually add a remote and push:
 
-```powershell
+\`\`\`powershell
 git remote add origin https://github.com/<your-username>/mom-music-app.git
 git add .
 git commit -m "Initial Music App offline PWA"
 git push -u origin main
-```
+\`\`\`
 
 ## Tech notes
 

@@ -37,4 +37,3 @@ export interface TrackSummary {
   filename: string
   artUrl?: string
 }
-

@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import type {
-  SortDirection,
-  SortField,
-  TabKey,
-  TrackSummary,
-} from './types'
+import type { TabKey, TrackSummary } from './types'
 import {
   deleteAllTracks,
   getAllTrackSummaries,
@@ -20,12 +15,13 @@ type ImportProgress = {
   total: number
 }
 
-const SORT_LABELS: Record<SortField, string> = {
+type FilterBy = 'all' | 'title' | 'artist' | 'album' | 'folder' | 'filename'
+
+const FILTER_LABELS: Record<FilterBy, string> = {
+  all: 'Everything',
   title: 'Title',
   artist: 'Artist',
   album: 'Album',
-  duration: 'Duration',
-  addedAt: 'Date Added',
   folder: 'Folder',
   filename: 'Filename',
 }
@@ -38,34 +34,8 @@ function formatTime(seconds: number) {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
-function compareValues(a: string | number, b: string | number) {
-  if (typeof a === 'number' && typeof b === 'number') {
-    return a - b
-  }
-  return String(a).localeCompare(String(b), undefined, {
-    sensitivity: 'base',
-    numeric: true,
-  })
-}
-
-function sortTracks(tracks: TrackSummary[], field: SortField, dir: SortDirection) {
-  const sorted = [...tracks].sort((a, b) => {
-    const aVal =
-      field === 'duration' || field === 'addedAt'
-        ? a[field]
-        : field === 'folder'
-          ? a.folder
-          : a[field]
-    const bVal =
-      field === 'duration' || field === 'addedAt'
-        ? b[field]
-        : field === 'folder'
-          ? b.folder
-          : b[field]
-    const base = compareValues(aVal, bVal)
-    return dir === 'asc' ? base : -base
-  })
-  return sorted
+function defaultSort(tracks: TrackSummary[]) {
+  return [...tracks].sort((a, b) => b.addedAt - a.addedAt)
 }
 
 function useStorageEstimate() {
@@ -93,11 +63,7 @@ function App() {
   const [tracks, setTracks] = useState<TrackSummary[]>([])
   const [tab, setTab] = useState<TabKey>('library')
   const [search, setSearch] = useState('')
-  const [sortField, setSortField] = useState<SortField>('addedAt')
-  const [sortDir, setSortDir] = useState<SortDirection>('desc')
-  const [artistFilter, setArtistFilter] = useState('')
-  const [albumFilter, setAlbumFilter] = useState('')
-  const [folderFilter, setFolderFilter] = useState('')
+  const [filterBy, setFilterBy] = useState<FilterBy>('all')
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
 
@@ -126,58 +92,23 @@ function App() {
     loadTracks().catch(() => undefined)
   }, [loadTracks])
 
-  const allArtists = useMemo(() => {
-    return Array.from(new Set(tracks.map((t) => t.artist))).sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: 'base' }),
-    )
-  }, [tracks])
-
-  const allAlbums = useMemo(() => {
-    return Array.from(new Set(tracks.map((t) => t.album))).sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: 'base' }),
-    )
-  }, [tracks])
-
-  const allFolders = useMemo(() => {
-    return Array.from(new Set(tracks.map((t) => t.folder))).sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: 'base' }),
-    )
-  }, [tracks])
-
   const filteredTracks = useMemo(() => {
     const loweredSearch = search.trim().toLowerCase()
 
-    const base = tracks.filter((track) => {
-      if (tab === 'favorites' && !track.favorite) return false
-      if (artistFilter && track.artist !== artistFilter) return false
-      if (albumFilter && track.album !== albumFilter) return false
-      if (folderFilter && track.folder !== folderFilter) return false
-      if (!loweredSearch) return true
+    const base = tracks.filter((track) => !(tab === 'favorites' && !track.favorite))
+    if (!loweredSearch) return defaultSort(base)
 
-      const haystack = [
-        track.title,
-        track.artist,
-        track.album,
-        track.folder,
-        track.filename,
-      ]
-        .join(' ')
-        .toLowerCase()
+    const matches = (track: TrackSummary) => {
+      const fields =
+        filterBy === 'all'
+          ? [track.title, track.artist, track.album, track.folder, track.filename]
+          : [track[filterBy]]
 
-      return haystack.includes(loweredSearch)
-    })
+      return fields.join(' ').toLowerCase().includes(loweredSearch)
+    }
 
-    return sortTracks(base, sortField, sortDir)
-  }, [
-    tracks,
-    tab,
-    artistFilter,
-    albumFilter,
-    folderFilter,
-    search,
-    sortField,
-    sortDir,
-  ])
+    return defaultSort(base.filter(matches))
+  }, [tracks, tab, search, filterBy])
 
   const currentTrack = useMemo(() => {
     return currentId ? tracks.find((t) => t.id === currentId) ?? null : null
@@ -496,9 +427,9 @@ function App() {
         </div>
 
         <div className="panel__hint">
-          Tip: click <strong>Import Folder</strong> and pick
-          {' '}<code>Downloads\Music</code> (or any folder). Browsers block auto-scanning local files,
-          but once you import, everything is saved for offline playback.
+          Tip: click <strong>Import Folder</strong> and pick{' '}
+          <code>Downloads\Music</code> (or any folder). Browsers block auto-scanning
+          local files, but once you import, everything is saved for offline playback.
         </div>
 
         {importProgress && (
@@ -527,87 +458,39 @@ function App() {
       <section className="panel panel--controls">
         <div className="controls">
           <label className="field">
+            <span className="field__label">Filter By</span>
+            <select
+              className="field__select"
+              value={filterBy}
+              onChange={(e) => setFilterBy(e.target.value as FilterBy)}
+            >
+              {(Object.keys(FILTER_LABELS) as FilterBy[]).map((key) => (
+                <option key={key} value={key}>
+                  {FILTER_LABELS[key]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field field--search">
             <span className="field__label">Search</span>
-            <input
-              className="field__input"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Title, artist, album, folder..."
-            />
-          </label>
-
-          <label className="field">
-            <span className="field__label">Sort</span>
-            <div className="field__inline">
-              <select
-                className="field__select"
-                value={sortField}
-                onChange={(e) => setSortField(e.target.value as SortField)}
+            <div className="search">
+              <input
+                className="field__input search__input"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Type to search..."
+              />
+              <button
+                className="btn btn--primary search__btn"
+                type="button"
+                onClick={() => setSearch((prev) => prev.trim())}
+                aria-label="Search"
+                title="Search"
               >
-                {(Object.keys(SORT_LABELS) as SortField[]).map((key) => (
-                  <option key={key} value={key}>
-                    {SORT_LABELS[key]}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="field__select field__select--tight"
-                value={sortDir}
-                onChange={(e) => setSortDir(e.target.value as SortDirection)}
-                aria-label="Sort direction"
-              >
-                <option value="asc">Asc</option>
-                <option value="desc">Desc</option>
-              </select>
+                Search
+              </button>
             </div>
-          </label>
-
-          <label className="field">
-            <span className="field__label">Artist</span>
-            <select
-              className="field__select"
-              value={artistFilter}
-              onChange={(e) => setArtistFilter(e.target.value)}
-            >
-              <option value="">All Artists</option>
-              {allArtists.map((artist) => (
-                <option key={artist} value={artist}>
-                  {artist}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="field">
-            <span className="field__label">Album</span>
-            <select
-              className="field__select"
-              value={albumFilter}
-              onChange={(e) => setAlbumFilter(e.target.value)}
-            >
-              <option value="">All Albums</option>
-              {allAlbums.map((album) => (
-                <option key={album} value={album}>
-                  {album}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="field">
-            <span className="field__label">Folder</span>
-            <select
-              className="field__select"
-              value={folderFilter}
-              onChange={(e) => setFolderFilter(e.target.value)}
-            >
-              <option value="">All Folders</option>
-              {allFolders.map((folder) => (
-                <option key={folder} value={folder}>
-                  {folder}
-                </option>
-              ))}
-            </select>
           </label>
         </div>
       </section>

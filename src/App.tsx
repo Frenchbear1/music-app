@@ -614,7 +614,7 @@ function App() {
               aria-label="Settings"
               title="Settings"
             >
-              <img src="/public/icons/settings.png" alt="" className="icon-img" aria-hidden="true" />
+              <img src="/icons/settings.png" alt="" className="icon-img" aria-hidden="true" />
             </button>
 
             {settingsOpen && (
@@ -752,17 +752,17 @@ function App() {
                 aria-label={shuffleOn ? 'Shuffle on' : 'Shuffle off'}
                 title={shuffleOn ? 'Shuffle on' : 'Shuffle off'}
               >
-                <img src="/public/icons/shuffle.png" alt="" className="icon-img" aria-hidden="true" />
+                <img src="/icons/shuffle.png" alt="" className="icon-img" aria-hidden="true" />
               </button>
               <div className="player__main-controls">
                 <button className="icon-btn" onClick={goPrev} disabled={prevDisabled} aria-label="Previous">
-                  <img src="/public/icons/backward-arrow.png" alt="" className="icon-img" aria-hidden="true" />
+                  <img src="/icons/backward-arrow.png" alt="" className="icon-img" aria-hidden="true" />
                 </button>
                 <button className="icon-btn icon-btn--play" onClick={togglePlayPause} aria-label={isPlaying ? 'Pause' : 'Play'}>
                   {isPlaying ? 'Pause' : 'Play'}
                 </button>
                 <button className="icon-btn" onClick={goNext} disabled={nextDisabled} aria-label="Next">
-                  <img src="/public/icons/next.png" alt="" className="icon-img" aria-hidden="true" />
+                  <img src="/icons/next.png" alt="" className="icon-img" aria-hidden="true" />
                 </button>
               </div>
               <button
@@ -773,7 +773,7 @@ function App() {
                 title={currentTrack?.favorite ? 'Remove from favorites' : 'Add to favorites'}
               >
                 <img
-                  src={currentTrack?.favorite ? '/public/icons/filled-heart.png' : '/public/icons/heart.png'}
+                  src={currentTrack?.favorite ? '/icons/filled-heart.png' : '/icons/heart.png'}
                   alt=""
                   className="icon-img icon-img--large"
                   aria-hidden="true"
@@ -975,7 +975,7 @@ function App() {
                         title={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
                       >
                         <img
-                          src={track.favorite ? '/public/icons/filled-heart.png' : '/public/icons/heart.png'}
+                          src={track.favorite ? '/icons/filled-heart.png' : '/icons/heart.png'}
                           alt=""
                           className="icon-img icon-img--small"
                           aria-hidden="true"

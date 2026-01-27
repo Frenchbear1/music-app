@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" role="img" aria-labelledby="title desc">
+  <title>Mom Music Apple Touch Icon</title>
+  <desc>Rounded gradient background with music note.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7c5cff" />
+      <stop offset="100%" stop-color="#2dd4bf" />
+    </linearGradient>
+  </defs>
+  <rect width="180" height="180" rx="40" fill="url(#bg)" />
+  <path d="M112 40v70a21 21 0 1 1-11-18.5V58L72 65v50a20.6 20.6 0 1 1-11-18.2V56.8c0-5.2 3.6-9.7 8.7-10.9l40.6-9.5c6.3-1.5 12.7 3.1 12.7 9.6Z" fill="#0b1020" />
+</svg>

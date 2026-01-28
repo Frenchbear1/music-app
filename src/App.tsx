@@ -788,12 +788,6 @@ function App() {
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
     const mediaSession = navigator.mediaSession
-    const isIOS = /iP(ad|hone|od)/.test(navigator.userAgent)
-    const isStandalone =
-      window.matchMedia?.('(display-mode: standalone)').matches ||
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (navigator as any).standalone === true
-
     const setHandler = (
       action: MediaSessionAction,
       handler: MediaSessionActionHandler | null,
@@ -809,19 +803,9 @@ function App() {
     setHandler('pause', ensurePause)
     setHandler('previoustrack', goPrev)
     setHandler('nexttrack', goNext)
-    if (isStandalone || isIOS) {
-      setHandler('seekto', null)
-      setHandler('seekbackward', null)
-      setHandler('seekforward', null)
-    } else {
-      setHandler('seekto', (details) => {
-        if (details.seekTime !== undefined) {
-          seekTo(details.seekTime)
-        }
-      })
-      setHandler('seekbackward', null)
-      setHandler('seekforward', null)
-    }
+    setHandler('seekto', null)
+    setHandler('seekbackward', null)
+    setHandler('seekforward', null)
     setHandler('stop', ensurePause)
 
     return () => {
@@ -834,25 +818,18 @@ function App() {
       setHandler('seekforward', null)
       setHandler('stop', null)
     }
-  }, [ensurePause, ensurePlay, goNext, goPrev, seekTo])
+  }, [ensurePause, ensurePlay, goNext, goPrev])
 
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
     const mediaSession = navigator.mediaSession
-    const isIOS = /iP(ad|hone|od)/.test(navigator.userAgent)
-    const isStandalone =
-      window.matchMedia?.('(display-mode: standalone)').matches ||
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (navigator as any).standalone === true
     if (!mediaSession.setPositionState) return
-    if (isIOS || isStandalone) return
-    if (!currentTrack || !Number.isFinite(currentDuration) || currentDuration <= 0) return
-
+    // Avoid advertising position state to prefer track skip controls over 10s seek buttons.
     try {
       mediaSession.setPositionState({
-        duration: currentDuration,
-        playbackRate: audioRef.current?.playbackRate ?? 1,
-        position: Math.min(currentTime, currentDuration),
+        duration: 0,
+        playbackRate: 1,
+        position: 0,
       })
     } catch {
       // Ignore position state errors on unsupported platforms.

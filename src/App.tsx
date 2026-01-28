@@ -795,12 +795,16 @@ function App() {
     setHandler('pause', ensurePause)
     setHandler('previoustrack', goPrev)
     setHandler('nexttrack', goNext)
-    setHandler('seekto', (details) => {
-      if (details.seekTime !== undefined) {
-        seekTo(details.seekTime)
-      }
-    })
-    if (!isIOS) {
+    if (isIOS) {
+      setHandler('seekto', null)
+      setHandler('seekbackward', null)
+      setHandler('seekforward', null)
+    } else {
+      setHandler('seekto', (details) => {
+        if (details.seekTime !== undefined) {
+          seekTo(details.seekTime)
+        }
+      })
       setHandler('seekbackward', null)
       setHandler('seekforward', null)
     }
@@ -812,10 +816,8 @@ function App() {
       setHandler('previoustrack', null)
       setHandler('nexttrack', null)
       setHandler('seekto', null)
-      if (!isIOS) {
-        setHandler('seekbackward', null)
-        setHandler('seekforward', null)
-      }
+      setHandler('seekbackward', null)
+      setHandler('seekforward', null)
       setHandler('stop', null)
     }
   }, [ensurePause, ensurePlay, goNext, goPrev, seekTo])

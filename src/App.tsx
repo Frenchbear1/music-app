@@ -32,6 +32,11 @@ function formatTime(seconds: number) {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
+function stripExtension(filename: string) {
+  const dotIndex = filename.lastIndexOf('.')
+  return dotIndex > 0 ? filename.slice(0, dotIndex) : filename
+}
+
 function defaultSort(tracks: TrackSummary[]) {
   return [...tracks].sort((a, b) => b.addedAt - a.addedAt)
 }
@@ -1160,7 +1165,7 @@ function App() {
                 }
               >
                 <span key={currentTrack?.id ?? 'none'}>
-                  {currentTrack?.title ?? 'Nothing playing'}
+                  {currentTrack ? stripExtension(currentTrack.filename) : 'Nothing playing'}
                 </span>
               </div>
             </div>
@@ -1486,8 +1491,8 @@ function App() {
                     title="Tap to play. Press and hold to delete."
                   >
                     <div className="track__meta">
-                      <div className="track__title" title={track.title}>
-                        {track.title}
+                      <div className="track__title" title={track.filename}>
+                        {stripExtension(track.filename)}
                       </div>
                     </div>
 

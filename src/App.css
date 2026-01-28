@@ -763,9 +763,8 @@
 .track__title {
   font-weight: 700;
   font-size: 15px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .track__sub {
@@ -878,6 +877,8 @@
 
 .icon-btn--play {
   min-width: 92px;
+  height: 44px;
+  padding: 0 16px;
   border: 0;
   color: white;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));

@@ -962,7 +962,7 @@ function App() {
       <header className="app__header">
         <div className="app__top">
           <div className="app__brand">
-            <h1 className="app__title">Music App</h1>
+            <h1 className="app__title">My Music</h1>
           </div>
           <div className="header-actions">
             <button

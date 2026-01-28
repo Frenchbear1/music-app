@@ -830,7 +830,9 @@ function App() {
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
     const mediaSession = navigator.mediaSession
+    const isIOS = /iP(ad|hone|od)/.test(navigator.userAgent)
     if (!mediaSession.setPositionState) return
+    if (isIOS) return
     if (!currentTrack || !Number.isFinite(currentDuration) || currentDuration <= 0) return
 
     try {

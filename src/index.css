@@ -42,6 +42,10 @@ body {
   touch-action: manipulation;
 }
 
+body.no-scroll {
+  overflow: hidden;
+}
+
 button,
 input,
 select {

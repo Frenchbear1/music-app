@@ -1,5 +1,5 @@
 import type { TrackRecord } from '../types'
-import { getTrackRecord, upsertTracks } from './db'
+import { getFavoriteKeys, getTrackRecord, upsertTracks } from './db'
 import { buildTrackFromFile } from './metadata'
 
 type EmbeddedManifestEntry = {
@@ -68,6 +68,7 @@ export async function syncEmbeddedSongs(
 ): Promise<SyncResult> {
   const manifestEntries = await fetchManifest()
   const total = manifestEntries.length
+  const favoriteKeys = await getFavoriteKeys()
 
   if (total === 0) {
     onProgress?.({ completed: 0, total: 0 })
@@ -105,7 +106,7 @@ export async function syncEmbeddedSongs(
       filename: entry.filename,
       album: entry.albumName ?? albumFromFolder(entry.folder),
       addedAt: Date.now(),
-      favorite: false,
+      favorite: favoriteKeys.has(entry.path),
       source: 'embedded',
       sourceKey: entry.path,
     })

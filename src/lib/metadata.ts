@@ -45,6 +45,12 @@ function getAlbumFromFolder(folder: string) {
   return parts[parts.length - 1] ?? 'Unknown Album'
 }
 
+export function buildSourceKeyFromFile(file: File, folderOverride?: string, filenameOverride?: string) {
+  const folder = folderOverride ?? getFolderFromFile(file)
+  const filename = filenameOverride ?? file.name
+  return `file:${folder}|${filename}`
+}
+
 async function readMetadata(file: File): Promise<IAudioMetadata | null> {
   try {
     const { parseBlob } = await import('music-metadata-browser')
@@ -158,7 +164,7 @@ export async function buildTrackFromFile(
     filename,
     artUrl,
     source: options?.source ?? 'imported',
-    sourceKey: options?.sourceKey,
+    sourceKey: options?.sourceKey ?? buildSourceKeyFromFile(file, folder, filename),
     blob: file,
   }
 }
@@ -166,15 +172,41 @@ export async function buildTrackFromFile(
 export async function importAudioFiles(
   files: File[],
   onProgress?: (completed: number, total: number) => void,
+  options?: {
+    deletedKeys?: Set<string>
+    existingByKey?: Map<string, { id: string; addedAt: number; favorite: boolean }>
+    favoriteKeys?: Set<string>
+  },
 ): Promise<TrackRecord[]> {
   const audioFiles = files.filter(isAudioFile)
   const results: TrackRecord[] = []
+  const seenKeys = new Set<string>()
 
   let completed = 0
   const total = audioFiles.length
 
   for (const file of audioFiles) {
-    const track = await buildTrackFromFile(file)
+    const sourceKey = buildSourceKeyFromFile(file)
+    if (seenKeys.has(sourceKey)) {
+      completed += 1
+      onProgress?.(completed, total)
+      continue
+    }
+    seenKeys.add(sourceKey)
+    if (options?.deletedKeys?.has(sourceKey)) {
+      completed += 1
+      onProgress?.(completed, total)
+      continue
+    }
+    const existing = options?.existingByKey?.get(sourceKey)
+    const favorite =
+      options?.favoriteKeys?.has(sourceKey) || existing?.favorite || false
+    const track = await buildTrackFromFile(file, {
+      id: existing?.id,
+      addedAt: existing?.addedAt,
+      favorite,
+      sourceKey,
+    })
     results.push(track)
     completed += 1
     onProgress?.(completed, total)

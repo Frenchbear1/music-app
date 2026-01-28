@@ -4,29 +4,24 @@ import type { TabKey, TrackSummary } from './types'
 import {
   deleteAllTracks,
   deleteTrack,
+  addDeletedEntry,
   getAllTrackSummaries,
+  getDeletedEntries,
+  getDeletedKeys,
+  getFavoriteKeys,
   getTrackBlob,
+  removeDeletedKey,
+  setFavoriteKey,
   updateTrack,
   upsertTracks,
 } from './lib/db'
 import { syncEmbeddedSongs } from './lib/embedded'
-import { buildTrackFromFile, importAudioFiles } from './lib/metadata'
+import { buildSourceKeyFromFile, buildTrackFromFile, importAudioFiles } from './lib/metadata'
 
 type ImportProgress = {
   completed: number
   total: number
   label?: string
-}
-
-type FilterBy = 'all' | 'title' | 'artist' | 'album' | 'folder' | 'filename'
-
-const FILTER_LABELS: Record<FilterBy, string> = {
-  all: 'Everything',
-  title: 'Title',
-  artist: 'Artist',
-  album: 'Album',
-  folder: 'Folder',
-  filename: 'Filename',
 }
 
 function formatTime(seconds: number) {
@@ -69,11 +64,29 @@ function App() {
   const [tab, setTab] = useState<TabKey>('library')
   const [selectedAlbumFolder, setSelectedAlbumFolder] = useState<string | null>(null)
   const [search, setSearch] = useState('')
-  const [filterBy, setFilterBy] = useState<FilterBy>('all')
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [deletedOpen, setDeletedOpen] = useState(false)
+  const [deletedEntries, setDeletedEntries] = useState<
+    Array<{
+      key: string
+      deletedAt: number
+      title?: string
+      artist?: string
+      album?: string
+      folder?: string
+      filename?: string
+    }>
+  >([])
+  const [albumConfirm, setAlbumConfirm] = useState<{
+    folder: string
+    name: string
+    count: number
+    tracks: TrackSummary[]
+  } | null>(null)
 
   const [queueIds, setQueueIds] = useState<string[]>([])
   const [currentId, setCurrentId] = useState<string | null>(null)
@@ -81,12 +94,17 @@ function App() {
   const [currentTime, setCurrentTime] = useState(0)
   const [currentDuration, setCurrentDuration] = useState(0)
   const [shuffleOn, setShuffleOn] = useState(false)
+  const [titleMarquee, setTitleMarquee] = useState(false)
+  const [titleShift, setTitleShift] = useState(0)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const titleRef = useRef<HTMLDivElement | null>(null)
   const currentObjectUrlRef = useRef<string | null>(null)
   const pendingPlayRef = useRef(false)
   const longPressTimerRef = useRef<number | null>(null)
   const longPressTriggeredRef = useRef(false)
+  const albumLongPressTimerRef = useRef<number | null>(null)
+  const albumLongPressTriggeredRef = useRef(false)
   const sessionBlobsRef = useRef<Map<string, Blob>>(new Map())
 
   const folderInputRef = useRef<HTMLInputElement | null>(null)
@@ -147,11 +165,19 @@ function App() {
     if (!statusMessage) return
     const timeoutId = window.setTimeout(() => {
       setStatusMessage('')
-    }, 5000)
+    }, 0)
     return () => {
       window.clearTimeout(timeoutId)
     }
   }, [statusMessage])
+
+  useEffect(() => {
+    if (deletedOpen || albumConfirm) {
+      document.body.classList.add('no-scroll')
+      return
+    }
+    document.body.classList.remove('no-scroll')
+  }, [deletedOpen, albumConfirm])
 
   const embeddedAlbums = useMemo(() => {
     const embeddedTracks = tracks.filter(
@@ -208,16 +234,57 @@ function App() {
     if (!loweredSearch) return defaultSort(base)
 
     const matches = (track: TrackSummary) => {
-      const fields =
-        filterBy === 'all'
-          ? [track.title, track.artist, track.album, track.folder, track.filename]
-          : [track[filterBy]]
+      const fields = [
+        track.title,
+        track.artist,
+        track.album,
+        track.folder,
+        track.filename,
+      ]
 
       return fields.join(' ').toLowerCase().includes(loweredSearch)
     }
 
     return defaultSort(base.filter(matches))
-  }, [tracks, tab, selectedAlbum, search, filterBy])
+  }, [tracks, tab, selectedAlbum, search])
+
+  const deletedGroups = useMemo(() => {
+    const groups = new Map<string, typeof deletedEntries>()
+
+    const parseFolder = (entry: (typeof deletedEntries)[number]) => {
+      if (entry.folder) return entry.folder
+      if (entry.key.startsWith('file:')) {
+        const trimmed = entry.key.slice('file:'.length)
+        const sepIndex = trimmed.lastIndexOf('|')
+        if (sepIndex > 0) return trimmed.slice(0, sepIndex)
+      }
+      if (entry.key.startsWith('embedded:')) return 'Embedded'
+      return 'Imported'
+    }
+
+    const parseFilename = (entry: (typeof deletedEntries)[number]) => {
+      if (entry.filename) return entry.filename
+      if (entry.key.startsWith('file:')) {
+        const trimmed = entry.key.slice('file:'.length)
+        const sepIndex = trimmed.lastIndexOf('|')
+        if (sepIndex >= 0) return trimmed.slice(sepIndex + 1)
+      }
+      return entry.key
+    }
+
+    for (const entry of deletedEntries) {
+      const folder = parseFolder(entry)
+      const filename = parseFilename(entry)
+      const list = groups.get(folder) ?? []
+      list.push({ ...entry, filename, folder })
+      groups.set(folder, list)
+    }
+
+    return Array.from(groups.entries()).map(([folder, entries]) => ({
+      folder,
+      entries,
+    }))
+  }, [deletedEntries])
 
   useEffect(() => {
     if (tab !== 'albums' && selectedAlbumFolder) {
@@ -262,6 +329,19 @@ function App() {
       setStatusMessage('')
 
       const files = Array.from(fileList)
+      const deletedKeys = await getDeletedKeys()
+      const favoriteKeys = await getFavoriteKeys()
+      const existingSummaries = await getAllTrackSummaries()
+      const existingByKey = new Map<string, { id: string; addedAt: number; favorite: boolean }>()
+      for (const track of existingSummaries) {
+        if (track.sourceKey) {
+          existingByKey.set(track.sourceKey, {
+            id: track.id,
+            addedAt: track.addedAt,
+            favorite: track.favorite,
+          })
+        }
+      }
       setImportProgress({
         completed: 0,
         total: files.length,
@@ -275,9 +355,25 @@ function App() {
         let completed = 0
         const total = files.length
 
+        const seenKeys = new Set<string>()
         for (const file of files) {
+          const sourceKey = buildSourceKeyFromFile(file)
+          if (seenKeys.has(sourceKey)) {
+            completed += 1
+            setImportProgress({ completed, total, label: 'Loading for this session' })
+            continue
+          }
+          seenKeys.add(sourceKey)
+          if (deletedKeys.has(sourceKey)) {
+            completed += 1
+            setImportProgress({ completed, total, label: 'Loading for this session' })
+            continue
+          }
           const track = await buildTrackFromFile(file, {
             source: 'session',
+            sourceKey,
+            favorite:
+              favoriteKeys.has(sourceKey) || existingByKey.get(sourceKey)?.favorite || false,
           })
           sessionTracks.push(track)
           sessionBlobs.set(track.id, track.blob)
@@ -297,9 +393,19 @@ function App() {
         return
       }
 
-      const newTracks = await importAudioFiles(files, (completed, total) => {
-        setImportProgress({ completed, total, label: 'Importing' })
-      })
+      const newTracks = await importAudioFiles(
+        files,
+        (completed, total) => {
+          setImportProgress({ completed, total, label: 'Importing' })
+        },
+        { deletedKeys, existingByKey, favoriteKeys },
+      )
+
+      for (const track of newTracks) {
+        if (track.sourceKey && favoriteKeys.has(track.sourceKey)) {
+          track.favorite = true
+        }
+      }
 
       await upsertTracks(newTracks)
       await loadTracks()
@@ -317,14 +423,18 @@ function App() {
   )
 
   const openFolderPicker = useCallback(() => {
+    setImportOpen(false)
     folderInputRef.current?.click()
   }, [])
 
   const openFilePicker = useCallback(() => {
+    setImportOpen(false)
     fileInputRef.current?.click()
   }, [])
 
   const clearLibrary = useCallback(async () => {
+    const confirmed = window.confirm('Clear your entire library? This cannot be undone.')
+    if (!confirmed) return
     setSettingsOpen(false)
     await deleteAllTracks()
     sessionBlobsRef.current = new Map()
@@ -354,6 +464,10 @@ function App() {
 
   const setFavorite = useCallback(
     async (id: string, favorite: boolean) => {
+      const track = tracks.find((t) => t.id === id)
+      if (track?.sourceKey) {
+        await setFavoriteKey(track.sourceKey, favorite)
+      }
       if (libraryMode === 'session') {
         setTracks((prev) =>
           prev.map((t) => (t.id === id ? { ...t, favorite } : t)),
@@ -366,7 +480,7 @@ function App() {
 
       setTracks((prev) => prev.map((t) => (t.id === id ? updated : t)))
     },
-    [libraryMode],
+    [libraryMode, tracks],
   )
 
   const toggleFavorite = useCallback(
@@ -380,6 +494,16 @@ function App() {
     async (track: TrackSummary) => {
       const confirmed = window.confirm(`Delete "${track.title}"?`)
       if (!confirmed) return
+
+      const sourceKey = track.sourceKey || `file:${track.folder}|${track.filename}`
+      await addDeletedEntry({
+        key: sourceKey,
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        folder: track.folder,
+        filename: track.filename,
+      })
 
       if (libraryMode === 'session') {
         sessionBlobsRef.current.delete(track.id)
@@ -413,6 +537,21 @@ function App() {
     },
     [currentId, libraryMode, refreshStorageEstimate],
   )
+
+  const toggleDeletedList = useCallback(async () => {
+    setDeletedOpen((prev) => !prev)
+    if (!deletedOpen) {
+      const entries = await getDeletedEntries()
+      setDeletedEntries(
+        [...entries].sort((a, b) => b.deletedAt - a.deletedAt),
+      )
+    }
+  }, [deletedOpen])
+
+  const restoreDeletedEntry = useCallback(async (key: string) => {
+    await removeDeletedKey(key)
+    setDeletedEntries((prev) => prev.filter((entry) => entry.key !== key))
+  }, [])
 
   const loadTrackIntoAudio = useCallback(
     async (id: string) => {
@@ -454,6 +593,20 @@ function App() {
     if (!currentId) return
     loadTrackIntoAudio(currentId).catch(() => undefined)
   }, [currentId, loadTrackIntoAudio])
+
+  useEffect(() => {
+    const el = titleRef.current
+    if (!el) return
+    const update = () => {
+      const overflow = el.scrollWidth - el.clientWidth
+      setTitleMarquee(overflow > 0)
+      setTitleShift(overflow > 0 ? overflow : 0)
+    }
+    update()
+    const handleResize = () => update()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [currentTrack?.title])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -542,6 +695,28 @@ function App() {
     setCurrentId(prevId)
   }, [currentIndex, isPlaying, pickRandomNextId, queueIds, shuffleOn])
 
+  const ensurePlay = useCallback(() => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    if (!currentId && filteredTracks.length > 0) {
+      playTrack(filteredTracks[0], filteredTracks)
+      return
+    }
+
+    if (!audio.src && currentId) {
+      pendingPlayRef.current = true
+      setIsPlaying(true)
+      return
+    }
+
+    setIsPlaying(true)
+  }, [currentId, filteredTracks, playTrack])
+
+  const ensurePause = useCallback(() => {
+    setIsPlaying(false)
+  }, [])
+
   const togglePlayPause = useCallback(() => {
     const audio = audioRef.current
     if (!audio) return
@@ -567,6 +742,101 @@ function App() {
     setCurrentTime(value)
   }, [])
 
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    const mediaSession = navigator.mediaSession
+
+    try {
+      mediaSession.metadata = currentTrack
+        ? new MediaMetadata({
+            title: currentTrack.title || 'Unknown title',
+            artist: currentTrack.artist || 'Unknown artist',
+            album: currentTrack.album || '',
+            artwork: currentTrack.artUrl ? [{ src: currentTrack.artUrl }] : [],
+          })
+        : null
+    } catch {
+      // Ignore metadata errors on unsupported platforms.
+    }
+  }, [currentTrack])
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    const mediaSession = navigator.mediaSession
+
+    try {
+      if (!currentTrack) {
+        mediaSession.playbackState = 'none'
+      } else {
+        mediaSession.playbackState = isPlaying ? 'playing' : 'paused'
+      }
+    } catch {
+      // Ignore playbackState errors on unsupported platforms.
+    }
+  }, [currentTrack, isPlaying])
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    const mediaSession = navigator.mediaSession
+    const isIOS = /iP(ad|hone|od)/.test(navigator.userAgent)
+
+    const setHandler = (
+      action: MediaSessionAction,
+      handler: MediaSessionActionHandler | null,
+    ) => {
+      try {
+        mediaSession.setActionHandler(action, handler)
+      } catch {
+        // Ignore unsupported action handlers.
+      }
+    }
+
+    setHandler('play', ensurePlay)
+    setHandler('pause', ensurePause)
+    setHandler('previoustrack', goPrev)
+    setHandler('nexttrack', goNext)
+    setHandler('seekto', (details) => {
+      if (details.seekTime !== undefined) {
+        seekTo(details.seekTime)
+      }
+    })
+    if (!isIOS) {
+      setHandler('seekbackward', null)
+      setHandler('seekforward', null)
+    }
+    setHandler('stop', ensurePause)
+
+    return () => {
+      setHandler('play', null)
+      setHandler('pause', null)
+      setHandler('previoustrack', null)
+      setHandler('nexttrack', null)
+      setHandler('seekto', null)
+      if (!isIOS) {
+        setHandler('seekbackward', null)
+        setHandler('seekforward', null)
+      }
+      setHandler('stop', null)
+    }
+  }, [ensurePause, ensurePlay, goNext, goPrev, seekTo])
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    const mediaSession = navigator.mediaSession
+    if (!mediaSession.setPositionState) return
+    if (!currentTrack || !Number.isFinite(currentDuration) || currentDuration <= 0) return
+
+    try {
+      mediaSession.setPositionState({
+        duration: currentDuration,
+        playbackRate: audioRef.current?.playbackRate ?? 1,
+        position: Math.min(currentTime, currentDuration),
+      })
+    } catch {
+      // Ignore position state errors on unsupported platforms.
+    }
+  }, [currentDuration, currentTime, currentTrack])
+
   const clearLongPressTimer = useCallback(() => {
     if (longPressTimerRef.current !== null) {
       window.clearTimeout(longPressTimerRef.current)
@@ -591,9 +861,85 @@ function App() {
     clearLongPressTimer()
   }, [clearLongPressTimer])
 
+  const clearAlbumLongPressTimer = useCallback(() => {
+    if (albumLongPressTimerRef.current !== null) {
+      window.clearTimeout(albumLongPressTimerRef.current)
+      albumLongPressTimerRef.current = null
+    }
+  }, [])
+
+  const startAlbumLongPress = useCallback(
+    (album: { folder: string; name: string; count: number; tracks: TrackSummary[] }) => {
+      albumLongPressTriggeredRef.current = false
+      clearAlbumLongPressTimer()
+
+      albumLongPressTimerRef.current = window.setTimeout(() => {
+        albumLongPressTriggeredRef.current = true
+        setAlbumConfirm(album)
+      }, 650)
+    },
+    [clearAlbumLongPressTimer],
+  )
+
+  const endAlbumLongPress = useCallback(() => {
+    clearAlbumLongPressTimer()
+  }, [clearAlbumLongPressTimer])
+
+  const confirmRemoveAlbum = useCallback(async () => {
+    if (!albumConfirm) return
+    const removedIds = new Set(albumConfirm.tracks.map((track) => track.id))
+
+    if (libraryMode === 'session') {
+      albumConfirm.tracks.forEach((track) => {
+        sessionBlobsRef.current.delete(track.id)
+      })
+    } else {
+      for (const track of albumConfirm.tracks) {
+        await deleteTrack(track.id)
+      }
+    }
+
+    setTracks((prev) => prev.filter((track) => !removedIds.has(track.id)))
+    setQueueIds((prev) => prev.filter((id) => !removedIds.has(id)))
+
+    if (currentId && removedIds.has(currentId)) {
+      setCurrentId(null)
+      setIsPlaying(false)
+      setCurrentTime(0)
+      setCurrentDuration(0)
+
+      const audio = audioRef.current
+      if (audio) {
+        audio.pause()
+        audio.removeAttribute('src')
+        audio.load()
+      }
+
+      if (currentObjectUrlRef.current) {
+        URL.revokeObjectURL(currentObjectUrlRef.current)
+        currentObjectUrlRef.current = null
+      }
+    }
+
+    if (tab === 'albums' && selectedAlbumFolder === albumConfirm.folder) {
+      setSelectedAlbumFolder(null)
+    }
+
+    refreshStorageEstimate().catch(() => undefined)
+    setAlbumConfirm(null)
+  }, [
+    albumConfirm,
+    currentId,
+    libraryMode,
+    refreshStorageEstimate,
+    selectedAlbumFolder,
+    tab,
+  ])
+
   const activeCount =
     tab === 'albums' && !selectedAlbumFolder ? embeddedAlbums.length : filteredTracks.length
   const totalCount = tracks.length
+
 
   return (
     <div className="app">
@@ -604,142 +950,217 @@ function App() {
           <div className="app__brand">
             <h1 className="app__title">Music App</h1>
           </div>
-          <div className="settings">
+          <div className="header-actions">
             <button
-              className={`icon-btn settings__btn ${settingsOpen ? 'settings__btn--active' : ''}`}
-              type="button"
-              onClick={() => setSettingsOpen((prev) => !prev)}
-              aria-expanded={settingsOpen}
-              aria-controls="settings-menu"
-              aria-label="Settings"
-              title="Settings"
-            >
-              <img src="/icons/settings.png" alt="" className="icon-img" aria-hidden="true" />
-            </button>
-
-            {settingsOpen && (
-              <div id="settings-menu" className="settings__menu" role="menu">
-                <div className="settings__meta">
-                  <span className="pill">
-                    Showing {activeCount} / {totalCount}
-                  </span>
-                  {storageEstimate && (
-                    <span className="pill">
-                      Storage {storageEstimate.usedMB.toFixed(0)} / {storageEstimate.quotaMB.toFixed(0)} MB
-                    </span>
-                  )}
-                </div>
-
-                <div className="settings__actions">
-                  <button className="btn btn--primary" onClick={openFolderPicker} role="menuitem">
-                    Import Folder
-                  </button>
-                  <button className="btn" onClick={openFilePicker} role="menuitem">
-                    Import Songs
-                  </button>
-                  <button className="btn btn--ghost" onClick={clearLibrary} role="menuitem">
-                    Clear Library
-                  </button>
-                </div>
-
-                <input
-                  ref={folderInputRef}
-                  className="sr-only"
-                  type="file"
-                  accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"
-                  multiple
-                  onChange={(e) => handleImport(e.target.files, 'offline').catch(() => undefined)}
-                  {...({ webkitdirectory: '' } as Record<string, string>)}
-                  {...({ directory: '' } as Record<string, string>)}
-                />
-
-                <input
-                  ref={fileInputRef}
-                  className="sr-only"
-                  type="file"
-                  accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"
-                  multiple
-                  onChange={(e) => handleImport(e.target.files, 'offline').catch(() => undefined)}
-                />
-
-              </div>
-            )}
-          </div>
-        </div>
-
-        
-
-        <div className="app__center">
-          <div className="tabs-group">
-            <div className="app__tabs" role="tablist" aria-label="Library Tabs">
-              <button
-                className={`tab ${tab === 'library' ? 'tab--active' : ''}`}
-                onClick={() => {
-                  setTab('library')
-                  setSelectedAlbumFolder(null)
-                }}
-                role="tab"
-                aria-selected={tab === 'library'}
-              >
-                Library
-              </button>
-              <button
-                className={`tab ${tab === 'favorites' ? 'tab--active' : ''}`}
-                onClick={() => {
-                  setTab('favorites')
-                  setSelectedAlbumFolder(null)
-                }}
-                role="tab"
-                aria-selected={tab === 'favorites'}
-              >
-                Favorites
-              </button>
-              <button
-                className={`tab ${tab === 'albums' ? 'tab--active' : ''}`}
-                onClick={() => {
-                  setTab('albums')
-                  setSelectedAlbumFolder(null)
-                }}
-                role="tab"
-                aria-selected={tab === 'albums'}
-              >
-                Albums
-              </button>
-            </div>
-
-            <button
-              className={`icon-btn toggle-btn ${searchOpen ? 'toggle-btn--active' : ''}`}
+              className={`icon-btn search-toggle ${searchOpen ? 'search-toggle--active' : ''}`}
               type="button"
               onClick={() => setSearchOpen((prev) => !prev)}
               aria-expanded={searchOpen}
               aria-controls="search-panel"
-              aria-label="Toggle search and filter"
-              title="Search and Filter"
+              aria-label="Toggle search"
+              title="Search"
             >
-              <svg
-                className="toggle-btn__icon"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-                focusable="false"
-              >
+              <svg className="search-toggle__icon" viewBox="0 0 24 24" focusable="false">
+                <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" />
                 <path
-                  d="M4 6h16l-6.8 7.4v4.8l-2.4-1.4v-3.4L4 6z"
+                  d="M20 20l-3.8-3.8"
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="2"
                   strokeLinecap="round"
-                  strokeLinejoin="round"
                 />
               </svg>
             </button>
+            <div className="import">
+              <button
+                className={`icon-btn import__btn ${importOpen ? 'import__btn--active' : ''}`}
+                type="button"
+                onClick={() => {
+                  setImportOpen((prev) => !prev)
+                  setSettingsOpen(false)
+                }}
+                aria-expanded={importOpen}
+                aria-controls="import-menu"
+                aria-label="Import"
+                title="Import"
+              >
+                <svg className="import__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path
+                    d="M12 3v10m0 0l-4-4m4 4l4-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+
+              {importOpen && (
+                <>
+                  <button
+                    className="import__backdrop"
+                    type="button"
+                    onClick={() => setImportOpen(false)}
+                    aria-label="Close import menu"
+                  />
+                  <div id="import-menu" className="import__menu" role="menu">
+                    <button
+                      className="import-card"
+                      onClick={openFolderPicker}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <div className="import-card__icon">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path
+                            d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </div>
+                      <div className="import-card__content">
+                        <div className="import-card__title">Import Folder</div>
+                        <div className="import-card__meta">Load all songs in a folder</div>
+                      </div>
+                    </button>
+                    <button
+                      className="import-card"
+                      onClick={openFilePicker}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <div className="import-card__icon">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path
+                            d="M9 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <path
+                            d="M10 9h4m-4 4h4"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </div>
+                      <div className="import-card__content">
+                        <div className="import-card__title">Import Songs</div>
+                        <div className="import-card__meta">Pick individual files</div>
+                      </div>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="settings">
+              <button
+                className={`icon-btn settings__btn ${settingsOpen ? 'settings__btn--active' : ''}`}
+                type="button"
+                onClick={() => {
+                  setSettingsOpen((prev) => !prev)
+                  setImportOpen(false)
+                }}
+                aria-expanded={settingsOpen}
+                aria-controls="settings-menu"
+                aria-label="Settings"
+                title="Settings"
+              >
+                <img src="/icons/settings.png" alt="" className="icon-img" aria-hidden="true" />
+              </button>
+
+              {settingsOpen && (
+                <>
+                  <button
+                    className="settings__backdrop"
+                    type="button"
+                    onClick={() => setSettingsOpen(false)}
+                    aria-label="Close settings"
+                  />
+                  <div id="settings-menu" className="settings__menu" role="menu">
+                    <div className="settings__meta">
+                      <span className="pill">
+                        Showing {activeCount} / {totalCount}
+                      </span>
+                      {storageEstimate && (
+                        <span className="pill">
+                          Storage {storageEstimate.usedMB.toFixed(0)} / {storageEstimate.quotaMB.toFixed(0)} MB
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="settings__actions">
+                      <button className="btn btn--ghost" onClick={clearLibrary} role="menuitem">
+                        Clear Library
+                      </button>
+                      <button className="btn" onClick={toggleDeletedList} role="menuitem">
+                        Show Deleted Songs
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
+
       </header>
+
+      <input
+        ref={folderInputRef}
+        className="sr-only"
+        type="file"
+        accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"
+        multiple
+        onChange={(e) => handleImport(e.target.files, 'offline').catch(() => undefined)}
+        {...({ webkitdirectory: '' } as Record<string, string>)}
+        {...({ directory: '' } as Record<string, string>)}
+      />
+
+      <input
+        ref={fileInputRef}
+        className="sr-only"
+        type="file"
+        accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"
+        multiple
+        onChange={(e) => handleImport(e.target.files, 'offline').catch(() => undefined)}
+      />
 
       <section className="player player--top">
           <div className="player__now">
             <div className="player__meta">
-              <div className="player__title">{currentTrack?.title ?? 'Nothing playing'}</div>
+              <div
+                ref={titleRef}
+                className={`player__title ${titleMarquee ? 'marquee' : ''}`}
+                style={
+                  titleMarquee
+                    ? ({ '--marquee-shift': `-${titleShift}px` } as React.CSSProperties)
+                    : undefined
+                }
+              >
+                <span key={currentTrack?.id ?? 'none'}>
+                  {currentTrack?.title ?? 'Nothing playing'}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -830,45 +1251,149 @@ function App() {
       )}
 
       {searchOpen && (
-        <section id="search-panel" className="panel panel--controls">
+        <section id="search-panel" className="search-panel">
           <div className="controls">
-            <label className="field">
-              <span className="field__label">Filter By</span>
-              <select
-                className="field__select"
-                value={filterBy}
-                onChange={(e) => setFilterBy(e.target.value as FilterBy)}
-              >
-                {(Object.keys(FILTER_LABELS) as FilterBy[]).map((key) => (
-                  <option key={key} value={key}>
-                    {FILTER_LABELS[key]}
-                  </option>
-                ))}
-              </select>
-            </label>
-
             <label className="field field--search">
-              <span className="field__label">Search</span>
-              <div className="search">
+              <div className="search-shell">
                 <input
-                  className="field__input search__input"
+                  className="search-shell__input"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Type to search..."
+                  placeholder="Search your library..."
                 />
-                <button
-                  className="btn btn--primary search__btn"
-                  type="button"
-                  onClick={() => setSearch((prev) => prev.trim())}
-                  aria-label="Search"
-                  title="Search"
-                >
-                  Search
-                </button>
+                {search && (
+                  <button
+                    type="button"
+                    className="search-shell__clear"
+                    onClick={() => setSearch('')}
+                    aria-label="Clear search"
+                    title="Clear search"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             </label>
           </div>
         </section>
+      )}
+
+      {deletedOpen && (
+        <div className="deleted-modal deleted-modal--full" role="dialog" aria-modal="true">
+          <button
+            className="deleted-modal__backdrop"
+            type="button"
+            onClick={() => setDeletedOpen(false)}
+            aria-label="Close deleted songs list"
+          />
+          <div className="deleted-modal__content">
+            <div className="deleted-modal__header">
+              <h2 className="deleted-modal__title">Deleted Songs</h2>
+              <div className="deleted-modal__actions">
+                <button
+                  className="btn btn--ghost"
+                  type="button"
+                  onClick={() => {
+                    const confirmed = window.confirm(
+                      'Clear this deleted list view? This does not restore songs.',
+                    )
+                    if (!confirmed) return
+                    setDeletedEntries([])
+                  }}
+                >
+                  Clear List
+                </button>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => setDeletedOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="deleted-list__container">
+              {deletedEntries.length === 0 ? (
+                <div className="deleted-list__empty">No deleted songs yet.</div>
+              ) : (
+                <div className="deleted-groups">
+                  {deletedGroups.map((group) => (
+                    <div key={group.folder} className="deleted-group">
+                      <div className="deleted-group__title">{group.folder}</div>
+                      <ul className="deleted-list__items">
+                        {group.entries.map((entry) => (
+                          <li key={entry.key} className="deleted-list__item">
+                            <div className="deleted-list__row">
+                              <div className="deleted-list__info">
+                                <div className="deleted-list__file">
+                                  {entry.filename || 'Unknown file'}
+                                </div>
+                              </div>
+                              <button
+                                className="deleted-list__restore"
+                                type="button"
+                                onClick={() => restoreDeletedEntry(entry.key)}
+                                aria-label="Restore song"
+                                title="Restore"
+                              >
+                                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                  <path
+                                    d="M3 12a9 9 0 1 0 3-6.7"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                  <path
+                                    d="M3 4v4h4"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {albumConfirm && (
+        <div className="deleted-modal deleted-modal--compact" role="dialog" aria-modal="true">
+          <button
+            className="deleted-modal__backdrop"
+            type="button"
+            onClick={() => setAlbumConfirm(null)}
+            aria-label="Cancel album removal"
+          />
+          <div className="deleted-modal__content">
+            <div className="deleted-modal__header deleted-modal__header--stacked">
+              <h2 className="deleted-modal__title">Remove album?</h2>
+              <div className="deleted-modal__actions">
+                <button className="btn" type="button" onClick={() => setAlbumConfirm(null)}>
+                  Cancel
+                </button>
+                <button className="btn btn--ghost" type="button" onClick={confirmRemoveAlbum}>
+                  Remove Album
+                </button>
+              </div>
+            </div>
+            <div className="deleted-list__empty deleted-list__note">
+              This will remove “{albumConfirm.name}” and its {albumConfirm.count}{' '}
+              {albumConfirm.count === 1 ? 'song' : 'songs'} from the app.
+            </div>
+          </div>
+        </div>
       )}
 
       {tab === 'albums' && selectedAlbum && (
@@ -904,7 +1429,15 @@ function App() {
                     <button
                       className="album__btn"
                       type="button"
+                      onPointerDown={() => startAlbumLongPress(album)}
+                      onPointerUp={endAlbumLongPress}
+                      onPointerLeave={endAlbumLongPress}
+                      onPointerCancel={endAlbumLongPress}
                       onClick={() => {
+                        if (albumLongPressTriggeredRef.current) {
+                          albumLongPressTriggeredRef.current = false
+                          return
+                        }
                         setTab('albums')
                         setSelectedAlbumFolder(album.folder)
                       }}
@@ -989,6 +1522,72 @@ function App() {
           </ul>
         )}
       </main>
+
+      <div className="tabs-dock">
+        <div className="tabs-group">
+          <div className="app__tabs" role="tablist" aria-label="Library Tabs">
+            <input
+              type="radio"
+              name="library-tabs"
+              id="tab-library"
+              className="tab-input"
+              checked={tab === 'library'}
+              onChange={() => {
+                setTab('library')
+                setSelectedAlbumFolder(null)
+              }}
+            />
+            <label
+              htmlFor="tab-library"
+              className="tab"
+              role="tab"
+              aria-selected={tab === 'library'}
+            >
+              Library
+            </label>
+
+            <input
+              type="radio"
+              name="library-tabs"
+              id="tab-favorites"
+              className="tab-input"
+              checked={tab === 'favorites'}
+              onChange={() => {
+                setTab('favorites')
+                setSelectedAlbumFolder(null)
+              }}
+            />
+            <label
+              htmlFor="tab-favorites"
+              className="tab"
+              role="tab"
+              aria-selected={tab === 'favorites'}
+            >
+              Favorites
+            </label>
+
+            <input
+              type="radio"
+              name="library-tabs"
+              id="tab-albums"
+              className="tab-input"
+              checked={tab === 'albums'}
+              onChange={() => {
+                setTab('albums')
+                setSelectedAlbumFolder(null)
+              }}
+            />
+            <label
+              htmlFor="tab-albums"
+              className="tab"
+              role="tab"
+              aria-selected={tab === 'albums'}
+            >
+              Albums
+            </label>
+          </div>
+        </div>
+      </div>
 
     </div>
   )

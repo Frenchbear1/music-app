@@ -789,6 +789,10 @@ function App() {
     if (!('mediaSession' in navigator)) return
     const mediaSession = navigator.mediaSession
     const isIOS = /iP(ad|hone|od)/.test(navigator.userAgent)
+    const isStandalone =
+      window.matchMedia?.('(display-mode: standalone)').matches ||
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (navigator as any).standalone === true
 
     const setHandler = (
       action: MediaSessionAction,
@@ -805,7 +809,7 @@ function App() {
     setHandler('pause', ensurePause)
     setHandler('previoustrack', goPrev)
     setHandler('nexttrack', goNext)
-    if (isIOS) {
+    if (isStandalone || isIOS) {
       setHandler('seekto', null)
       setHandler('seekbackward', null)
       setHandler('seekforward', null)
@@ -836,8 +840,12 @@ function App() {
     if (!('mediaSession' in navigator)) return
     const mediaSession = navigator.mediaSession
     const isIOS = /iP(ad|hone|od)/.test(navigator.userAgent)
+    const isStandalone =
+      window.matchMedia?.('(display-mode: standalone)').matches ||
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (navigator as any).standalone === true
     if (!mediaSession.setPositionState) return
-    if (isIOS) return
+    if (isIOS || isStandalone) return
     if (!currentTrack || !Number.isFinite(currentDuration) || currentDuration <= 0) return
 
     try {

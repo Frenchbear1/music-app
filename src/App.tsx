@@ -803,7 +803,10 @@ function App() {
     setHandler('pause', ensurePause)
     setHandler('previoustrack', goPrev)
     setHandler('nexttrack', goNext)
-    setHandler('seekto', null)
+    setHandler('seekto', (details) => {
+      if (typeof details?.seekTime !== 'number') return
+      seekTo(details.seekTime)
+    })
     setHandler('seekbackward', null)
     setHandler('seekforward', null)
     setHandler('stop', ensurePause)
@@ -818,18 +821,30 @@ function App() {
       setHandler('seekforward', null)
       setHandler('stop', null)
     }
-  }, [ensurePause, ensurePlay, goNext, goPrev])
+  }, [ensurePause, ensurePlay, goNext, goPrev, seekTo])
 
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
     const mediaSession = navigator.mediaSession
     if (!mediaSession.setPositionState) return
-    // Avoid advertising position state to prefer track skip controls over 10s seek buttons.
     try {
+      if (!currentTrack || !Number.isFinite(currentDuration) || currentDuration <= 0) {
+        mediaSession.setPositionState({
+          duration: 0,
+          playbackRate: 1,
+          position: 0,
+        })
+        return
+      }
+
+      const audio = audioRef.current
+      const playbackRate = audio?.playbackRate ?? 1
+      const position = Math.min(Math.max(currentTime, 0), currentDuration)
+
       mediaSession.setPositionState({
-        duration: 0,
-        playbackRate: 1,
-        position: 0,
+        duration: currentDuration,
+        playbackRate,
+        position,
       })
     } catch {
       // Ignore position state errors on unsupported platforms.

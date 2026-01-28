@@ -716,9 +716,14 @@ function App() {
     }
 
     setIsPlaying(true)
+    audio.play().catch(() => {
+      setIsPlaying(false)
+    })
   }, [currentId, filteredTracks, playTrack])
 
   const ensurePause = useCallback(() => {
+    const audio = audioRef.current
+    audio?.pause()
     setIsPlaying(false)
   }, [])
 

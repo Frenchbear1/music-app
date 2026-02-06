@@ -4,7 +4,9 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
-  const base = mode === 'production' ? '/music-app/' : '/'
+  const base =
+    process.env.VITE_BASE_PATH ||
+    (process.env.VERCEL ? '/' : mode === 'production' ? '/music-app/' : '/')
 
   return {
     base,
@@ -12,7 +14,12 @@ export default defineConfig(({ mode }) => {
       react(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['apple-touch-icon.svg'],
+        includeAssets: [
+          'icons/apple-touch-icon.png',
+          'icons/icon-192x192.png',
+          'icons/icon-512x512.png',
+          'icons/icon-32x32.png',
+        ],
         manifest: {
           name: 'Music App',
           short_name: 'Music App',
@@ -24,19 +31,19 @@ export default defineConfig(({ mode }) => {
           scope: base,
           icons: [
             {
-              src: 'pwa-192x192.svg',
+              src: 'icons/icon-192x192.png',
               sizes: '192x192',
-              type: 'image/svg+xml',
+              type: 'image/png',
             },
             {
-              src: 'pwa-512x512.svg',
+              src: 'icons/icon-512x512.png',
               sizes: '512x512',
-              type: 'image/svg+xml',
+              type: 'image/png',
             },
             {
-              src: 'pwa-512x512.svg',
+              src: 'icons/icon-512x512.png',
               sizes: '512x512',
-              type: 'image/svg+xml',
+              type: 'image/png',
               purpose: 'any maskable',
             },
           ],

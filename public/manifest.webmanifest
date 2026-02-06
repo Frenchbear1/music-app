@@ -1,18 +1,18 @@
 {
   "name": "Music App",
   "short_name": "Music",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "background_color": "#0b1020",
   "theme_color": "#0b1020",
   "icons": [
     {
-      "src": "/pwa-192x192.svg",
+      "src": "./pwa-192x192.svg",
       "sizes": "192x192",
       "type": "image/svg+xml"
     },
     {
-      "src": "/pwa-512x512.svg",
+      "src": "./pwa-512x512.svg",
       "sizes": "512x512",
       "type": "image/svg+xml"
     }

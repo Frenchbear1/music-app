@@ -24,7 +24,8 @@ type SyncResult = {
   skipped: number
 }
 
-const MANIFEST_PATH = '/songs/manifest.json'
+const ASSET_BASE = import.meta.env.BASE_URL
+const MANIFEST_PATH = `${ASSET_BASE}songs/manifest.json`
 
 function normalizeFolder(folder: string | undefined) {
   if (!folder || folder.trim().length === 0) return 'Embedded'
@@ -55,7 +56,10 @@ async function fetchManifest(): Promise<EmbeddedManifestEntry[]> {
 
 async function fetchSongBlob(path: string): Promise<Blob | null> {
   try {
-    const response = await fetch(path)
+    const normalized = path.startsWith('/')
+      ? `${ASSET_BASE}${path.slice(1)}`
+      : `${ASSET_BASE}${path}`
+    const response = await fetch(normalized)
     if (!response.ok) return null
     return await response.blob()
   } catch {
@@ -80,7 +84,10 @@ export async function syncEmbeddedSongs(
   let skipped = 0
 
   for (const entry of manifestEntries) {
-    const id = makeEmbeddedId(entry.path)
+    const normalizedPath = entry.path.startsWith('/')
+      ? `${ASSET_BASE}${entry.path.slice(1)}`
+      : `${ASSET_BASE}${entry.path}`
+    const id = makeEmbeddedId(normalizedPath)
     const existing = await getTrackRecord(id)
 
     if (existing) {
@@ -106,9 +113,9 @@ export async function syncEmbeddedSongs(
       filename: entry.filename,
       album: entry.albumName ?? albumFromFolder(entry.folder),
       addedAt: Date.now(),
-      favorite: favoriteKeys.has(entry.path),
+      favorite: favoriteKeys.has(normalizedPath),
       source: 'embedded',
-      sourceKey: entry.path,
+      sourceKey: normalizedPath,
     })
 
     newTracks.push(track)

@@ -65,7 +65,7 @@ async function generateManifest() {
           : 'Embedded'
 
       return {
-        path: `/songs/${relativeToSongs}`,
+        path: `songs/${relativeToSongs}`,
         filename,
         folder,
         albumName,
